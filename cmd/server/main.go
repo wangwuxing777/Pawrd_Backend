@@ -35,6 +35,11 @@ func main() {
 		log.Fatalf("Fatal error initializing simple db: %v", err)
 	}
 
+	// Initialize auth database
+	if err := models.InitAuthDB(); err != nil {
+		log.Fatalf("Fatal error initializing auth db: %v", err)
+	}
+
 	if *seedDB {
 		SeedDatabase(db)
 		fmt.Println("Seeding complete. Exiting...")
@@ -51,6 +56,9 @@ func main() {
 	mux.HandleFunc("/vaccines", handlers.VaccinesHandler)
 	mux.HandleFunc("/register", handlers.RegisterHandler)
 	mux.HandleFunc("/posts", handlers.PostsHandler)
+
+	// Auth endpoint
+	mux.HandleFunc("/api/auth/login", handlers.NewAuthLoginHandler())
 	mux.HandleFunc("/clinics", handlers.NewClinicsHandler(cfg))
 	mux.HandleFunc("/emergency-clinics", handlers.NewEmergencyClinicsHandler(cfg))
 
