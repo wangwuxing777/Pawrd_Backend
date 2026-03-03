@@ -22,6 +22,7 @@ Thumbs.db
 
 # Temporary / debug files
 openapi_output.json
+.cache/
 
 # Planning artifacts in root (kept in .gemini)
 task_plan.md
