@@ -9,11 +9,15 @@ import (
 
 // Post represents a blog post in the system
 type Post struct {
-	ID        string    `gorm:"type:text;primary_key" json:"id"`
-	AuthorID  string    `gorm:"type:text;not null;index" json:"authorId"`
-	Content   string    `gorm:"type:text;not null" json:"content"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	ID           string    `gorm:"type:text;primary_key" json:"id"`
+	AuthorID     string    `gorm:"type:text;not null;index" json:"authorId"`
+	AuthorName   string    `gorm:"type:text;default:''" json:"authorName"`
+	AuthorAvatar string    `gorm:"type:text;default:'person.circle.fill'" json:"authorAvatar"`
+	Title        string    `gorm:"type:text;default:''" json:"title"`
+	Content      string    `gorm:"type:text;not null" json:"content"`
+	ImageColor   string    `gorm:"type:text;default:'blue'" json:"imageColor"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
 
 	// Relationships
 	Images []PostImage `gorm:"foreignKey:PostID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"images,omitempty"`
