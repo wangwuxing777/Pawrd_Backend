@@ -73,7 +73,7 @@ func NewShopHandler(cfg *config.Config) http.HandlerFunc {
 		after := r.URL.Query().Get("cursor")
 
 		// Fetch products from Shopify
-		products, hasMore, nextCursor, err := client.FetchProducts(first, after)
+		products, _, _, err := client.FetchProducts(first, after)
 		if err != nil {
 			http.Error(w, "Failed to fetch products: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -85,14 +85,9 @@ func NewShopHandler(cfg *config.Config) http.HandlerFunc {
 			shopProducts = append(shopProducts, transformProduct(p))
 		}
 
-		// Return response
+		// Return response as raw array (iOS expects array, not wrapped object)
 		w.Header().Set("Content-Type", "application/json")
-		response := ProductsResponse{
-			Products:   shopProducts,
-			HasMore:    hasMore,
-			NextCursor: nextCursor,
-		}
-		json.NewEncoder(w).Encode(response)
+		json.NewEncoder(w).Encode(shopProducts)
 	}
 }
 
