@@ -115,11 +115,7 @@ func (c *VendorClient) ExtractFromAll(ctx context.Context, req ExtractRequest) (
 }
 
 func (c *VendorClient) extractFromVendor(ctx context.Context, vendor VendorDefinition, req ExtractRequest) ([]Field, error) {
-	payload := map[string]interface{}{
-		"model":        vendor.Model,
-		"image_urls":   req.ImageURLs,
-		"image_base64": req.ImageBase64,
-	}
+	payload := buildVendorPayload(vendor, req)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
@@ -149,6 +145,61 @@ func (c *VendorClient) extractFromVendor(ctx context.Context, vendor VendorDefin
 		return nil, err
 	}
 	return decodeVendorFields(vendor, respBody)
+}
+
+func buildVendorPayload(vendor VendorDefinition, req ExtractRequest) map[string]interface{} {
+	// SiliconFlow is OpenAI-compatible. Build chat/completions payload with image input.
+	if strings.Contains(strings.ToLower(vendor.Endpoint), "siliconflow.cn") {
+		contents := []map[string]interface{}{
+			{
+				"type": "text",
+				"text": "Extract pet health report fields and output pure JSON: {\"fields\":[{\"metric_key\":\"string\",\"value_number\":number|null,\"value_text\":\"string\",\"unit\":\"string\",\"confidence\":0~1}]}.",
+			},
+		}
+		for _, u := range req.ImageURLs {
+			u = strings.TrimSpace(u)
+			if u == "" {
+				continue
+			}
+			contents = append(contents, map[string]interface{}{
+				"type": "image_url",
+				"image_url": map[string]interface{}{
+					"url": u,
+				},
+			})
+		}
+		for _, b64 := range req.ImageBase64 {
+			b64 = strings.TrimSpace(b64)
+			if b64 == "" {
+				continue
+			}
+			contents = append(contents, map[string]interface{}{
+				"type": "image_url",
+				"image_url": map[string]interface{}{
+					"url": "data:image/jpeg;base64," + b64,
+				},
+			})
+		}
+
+		return map[string]interface{}{
+			"model": vendor.Model,
+			"messages": []map[string]interface{}{
+				{
+					"role":    "user",
+					"content": contents,
+				},
+			},
+			"temperature":     0,
+			"response_format": map[string]interface{}{"type": "json_object"},
+		}
+	}
+
+	// Generic vendor payload: easy to adapt for other providers.
+	return map[string]interface{}{
+		"model":        vendor.Model,
+		"image_urls":   req.ImageURLs,
+		"image_base64": req.ImageBase64,
+	}
 }
 
 func loadVendorsFromEnv() []VendorDefinition {
