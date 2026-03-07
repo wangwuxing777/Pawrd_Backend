@@ -112,6 +112,13 @@ func main() {
 	mux.HandleFunc("/api/medical/services/{category}", handlers.NewMedicalServiceDetailHandler(db))
 	mux.HandleFunc("/api/medical/admin/services/{id}", handlers.NewMedicalAdminUpdateHandler(db))
 
+	// Partner application handlers
+	mux.HandleFunc("/api/partners/apply", handlers.NewPartnersApplyHandler(db))
+	mux.HandleFunc("/api/admin/partners", handlers.NewPartnersAdminListHandler(db))
+	partnerAction := handlers.NewPartnersAdminActionHandler(db)
+	mux.HandleFunc("/api/admin/partners/{id}/approve", partnerAction)
+	mux.HandleFunc("/api/admin/partners/{id}/reject", partnerAction)
+
 	// Seed medical demo content on startup (idempotent)
 	SeedMedicalServices(db)
 
