@@ -161,7 +161,7 @@ func buildVendorPayload(vendor VendorDefinition, req ExtractRequest) map[string]
 		contents := []map[string]interface{}{
 			{
 				"type": "text",
-				"text": "Extract pet health report fields and output pure JSON: {\"fields\":[{\"metric_key\":\"string\",\"value_number\":number|null,\"value_text\":\"string\",\"unit\":\"string\",\"confidence\":0~1}]}.",
+				"text": "Extract pet health report fields and output pure JSON only: {\"fields\":[{\"metric_key\":\"string\",\"value_number\":number|null,\"value_text\":\"string\",\"unit\":\"string\",\"reference_range\":\"string\",\"qualitative_result\":\"阳性|阴性|可疑|未知\",\"confidence\":0~1}]}. Preserve original table semantics. If value is NoCt, put value_text=\"NoCt\".",
 			},
 		}
 		for _, u := range req.ImageURLs {
@@ -348,10 +348,12 @@ func parseFieldArray(arr []interface{}) []Field {
 		num, hasNum := pickNumber(obj, "value_number", "valueNumber", "numeric", "number", "value")
 
 		f := Field{
-			MetricKey:  key,
-			ValueText:  text,
-			Unit:       unit,
-			Confidence: conf,
+			MetricKey:         key,
+			ValueText:         text,
+			Unit:              unit,
+			ReferenceRange:    pickString(obj, "reference_range", "referenceRange", "ref_range", "ct_reference_range"),
+			QualitativeResult: pickString(obj, "qualitative_result", "qualitativeResult", "result", "conclusion"),
+			Confidence:        conf,
 		}
 		if hasNum {
 			f.ValueNumber = &num

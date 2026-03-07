@@ -391,6 +391,7 @@ func buildObservations(reportID string, fields []reportfusion.FusedField) ([]mod
 	sumConsensus := 0.0
 	finalStatus := string(models.ReviewStatusAutoPass)
 	for _, f := range fields {
+		f = normalizeFusedField(f)
 		sumConfidence += f.FusionConfidence
 		sumConsensus += f.ConsensusScore
 		status := string(f.ReviewStatus)
@@ -416,6 +417,8 @@ func buildObservations(reportID string, fields []reportfusion.FusedField) ([]mod
 			ValueNumber:         f.ValueNumber,
 			ValueText:           f.ValueText,
 			Unit:                f.Unit,
+			ReferenceRange:      f.ReferenceRange,
+			QualitativeResult:   f.QualitativeResult,
 			Confidence:          f.FusionConfidence,
 			ConsensusScore:      f.ConsensusScore,
 			ReviewStatus:        status,
@@ -449,4 +452,28 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func normalizeFusedField(f reportfusion.FusedField) reportfusion.FusedField {
+	f.MetricKey = strings.ToLower(strings.TrimSpace(f.MetricKey))
+	f.ValueText = strings.TrimSpace(f.ValueText)
+	f.ReferenceRange = strings.TrimSpace(f.ReferenceRange)
+	f.QualitativeResult = strings.TrimSpace(f.QualitativeResult)
+	f.Unit = strings.TrimSpace(f.Unit)
+
+	vtLower := strings.ToLower(f.ValueText)
+	if vtLower == "noct" || strings.Contains(vtLower, "no ct") {
+		f.ValueText = "NoCt"
+		if f.QualitativeResult == "" {
+			f.QualitativeResult = "阴性"
+		}
+	}
+
+	if strings.Contains(f.ValueText, "阴性") && f.QualitativeResult == "" {
+		f.QualitativeResult = "阴性"
+	}
+	if strings.Contains(f.ValueText, "阳性") && f.QualitativeResult == "" {
+		f.QualitativeResult = "阳性"
+	}
+	return f
 }

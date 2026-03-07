@@ -49,6 +49,8 @@ type ReportObservation struct {
 	ValueNumber         *float64  `gorm:"type:real" json:"value_number,omitempty"`
 	ValueText           string    `gorm:"type:text;default:''" json:"value_text,omitempty"`
 	Unit                string    `gorm:"type:text;default:''" json:"unit,omitempty"`
+	ReferenceRange      string    `gorm:"type:text;default:''" json:"reference_range,omitempty"`
+	QualitativeResult   string    `gorm:"type:text;default:''" json:"qualitative_result,omitempty"`
 	Flag                string    `gorm:"type:text;default:''" json:"flag,omitempty"`
 	Confidence          float64   `gorm:"type:real;default:0" json:"confidence"`
 	ConsensusScore      float64   `gorm:"type:real;default:0" json:"consensus_score"`

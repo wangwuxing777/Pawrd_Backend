@@ -7,14 +7,16 @@ import (
 )
 
 type Field struct {
-	MetricKey   string    `json:"metric_key"`
-	ValueNumber *float64  `json:"value_number,omitempty"`
-	ValueText   string    `json:"value_text,omitempty"`
-	Unit        string    `json:"unit,omitempty"`
-	Confidence  float64   `json:"confidence"`
-	SourcePage  int       `json:"source_page,omitempty"`
-	SourceLine  string    `json:"source_line,omitempty"`
-	SourceBBox  []float64 `json:"source_bbox,omitempty"`
+	MetricKey         string    `json:"metric_key"`
+	ValueNumber       *float64  `json:"value_number,omitempty"`
+	ValueText         string    `json:"value_text,omitempty"`
+	Unit              string    `json:"unit,omitempty"`
+	ReferenceRange    string    `json:"reference_range,omitempty"`
+	QualitativeResult string    `json:"qualitative_result,omitempty"`
+	Confidence        float64   `json:"confidence"`
+	SourcePage        int       `json:"source_page,omitempty"`
+	SourceLine        string    `json:"source_line,omitempty"`
+	SourceBBox        []float64 `json:"source_bbox,omitempty"`
 }
 
 type VendorResult struct {
@@ -41,6 +43,8 @@ type FusedField struct {
 	ValueNumber         *float64     `json:"value_number,omitempty"`
 	ValueText           string       `json:"value_text,omitempty"`
 	Unit                string       `json:"unit,omitempty"`
+	ReferenceRange      string       `json:"reference_range,omitempty"`
+	QualitativeResult   string       `json:"qualitative_result,omitempty"`
 	FusionConfidence    float64      `json:"fusion_confidence"`
 	ConsensusScore      float64      `json:"consensus_score"`
 	ReviewStatus        ReviewStatus `json:"review_status"`
@@ -104,6 +108,8 @@ func Fuse(results []VendorResult, settings []VendorSetting) []FusedField {
 			ValueNumber:         picked.ValueNumber,
 			ValueText:           picked.ValueText,
 			Unit:                picked.Unit,
+			ReferenceRange:      picked.ReferenceRange,
+			QualitativeResult:   picked.QualitativeResult,
 			FusionConfidence:    confidence,
 			ConsensusScore:      consensus,
 			ReviewStatus:        status,
@@ -173,13 +179,15 @@ func pickValue(items []struct {
 	if numericCount > 0 && totalWeight > 0 {
 		v := weightedSum / totalWeight
 		return Field{
-			MetricKey:   sourceField.MetricKey,
-			ValueNumber: &v,
-			Unit:        topText(unitBuckets),
-			Confidence:  sourceField.Confidence,
-			SourcePage:  sourceField.SourcePage,
-			SourceLine:  sourceField.SourceLine,
-			SourceBBox:  sourceField.SourceBBox,
+			MetricKey:         sourceField.MetricKey,
+			ValueNumber:       &v,
+			Unit:              topText(unitBuckets),
+			ReferenceRange:    majorityFieldText(items, func(f Field) string { return f.ReferenceRange }),
+			QualitativeResult: majorityFieldText(items, func(f Field) string { return f.QualitativeResult }),
+			Confidence:        sourceField.Confidence,
+			SourcePage:        sourceField.SourcePage,
+			SourceLine:        sourceField.SourceLine,
+			SourceBBox:        sourceField.SourceBBox,
 		}
 	}
 
@@ -199,13 +207,15 @@ func pickValue(items []struct {
 	}
 
 	return Field{
-		MetricKey:  sourceField.MetricKey,
-		ValueText:  topText(textBuckets),
-		Unit:       topText(unitBuckets),
-		Confidence: sourceField.Confidence,
-		SourcePage: sourceField.SourcePage,
-		SourceLine: sourceField.SourceLine,
-		SourceBBox: sourceField.SourceBBox,
+		MetricKey:         sourceField.MetricKey,
+		ValueText:         topText(textBuckets),
+		Unit:              topText(unitBuckets),
+		ReferenceRange:    majorityFieldText(items, func(f Field) string { return f.ReferenceRange }),
+		QualitativeResult: majorityFieldText(items, func(f Field) string { return f.QualitativeResult }),
+		Confidence:        sourceField.Confidence,
+		SourcePage:        sourceField.SourcePage,
+		SourceLine:        sourceField.SourceLine,
+		SourceBBox:        sourceField.SourceBBox,
 	}
 }
 
@@ -253,6 +263,22 @@ func topText(buckets map[string]float64) string {
 		}
 	}
 	return bestK
+}
+
+func majorityFieldText(items []struct {
+	vendorID string
+	field    Field
+	weight   float64
+}, selector func(Field) string) string {
+	buckets := map[string]float64{}
+	for _, it := range items {
+		s := strings.TrimSpace(selector(it.field))
+		if s == "" {
+			continue
+		}
+		buckets[s] += max(it.weight, 0.01)
+	}
+	return topText(buckets)
 }
 
 func averageWeight(items []struct {
