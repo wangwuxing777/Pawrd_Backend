@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
@@ -143,13 +144,11 @@ func (c *VendorClient) extractFromVendor(ctx context.Context, vendor VendorDefin
 		return nil, fmt.Errorf("status %d", resp.StatusCode)
 	}
 
-	var decoded struct {
-		Fields []Field `json:"fields"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
 		return nil, err
 	}
-	return decoded.Fields, nil
+	return decodeVendorFields(vendor, respBody)
 }
 
 func loadVendorsFromEnv() []VendorDefinition {
@@ -193,4 +192,164 @@ func parseFloatOrDefault(raw string, fallback float64) float64 {
 		return 1
 	}
 	return v
+}
+
+func decodeVendorFields(vendor VendorDefinition, body []byte) ([]Field, error) {
+	// Preferred shape: { "fields": [...] }
+	var direct struct {
+		Fields []Field `json:"fields"`
+	}
+	if err := json.Unmarshal(body, &direct); err == nil && len(direct.Fields) > 0 {
+		return direct.Fields, nil
+	}
+
+	// OpenAI-compatible shape:
+	// { "choices":[{"message":{"content":"{\"fields\":[...]}"}}] }
+	var openAICompat struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &openAICompat); err == nil && len(openAICompat.Choices) > 0 {
+		content := strings.TrimSpace(openAICompat.Choices[0].Message.Content)
+		content = strings.Trim(content, "`")
+		content = strings.TrimPrefix(content, "json")
+		content = strings.TrimSpace(content)
+		if content != "" {
+			var nested struct {
+				Fields []Field `json:"fields"`
+			}
+			if err := json.Unmarshal([]byte(content), &nested); err == nil && len(nested.Fields) > 0 {
+				return nested.Fields, nil
+			}
+			if fields := decodeLooseFieldsJSON([]byte(content)); len(fields) > 0 {
+				return fields, nil
+			}
+		}
+	}
+
+	// Fallback: loose parsing for vendor-specific schema variants.
+	if fields := decodeLooseFieldsJSON(body); len(fields) > 0 {
+		return fields, nil
+	}
+
+	return nil, fmt.Errorf("unable to decode fields for vendor %s", vendor.VendorID)
+}
+
+func decodeLooseFieldsJSON(body []byte) []Field {
+	var any map[string]interface{}
+	if err := json.Unmarshal(body, &any); err != nil {
+		return nil
+	}
+
+	// Common alternate keys.
+	keys := []string{"data", "result", "output", "extractions", "items", "metrics"}
+	for _, key := range keys {
+		if raw, ok := any[key]; ok {
+			if arr, ok := raw.([]interface{}); ok {
+				if parsed := parseFieldArray(arr); len(parsed) > 0 {
+					return parsed
+				}
+			}
+			if obj, ok := raw.(map[string]interface{}); ok {
+				if nestedRaw, ok := obj["fields"]; ok {
+					if arr, ok := nestedRaw.([]interface{}); ok {
+						if parsed := parseFieldArray(arr); len(parsed) > 0 {
+							return parsed
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if raw, ok := any["fields"]; ok {
+		if arr, ok := raw.([]interface{}); ok {
+			return parseFieldArray(arr)
+		}
+	}
+	return nil
+}
+
+func parseFieldArray(arr []interface{}) []Field {
+	out := make([]Field, 0, len(arr))
+	for _, item := range arr {
+		obj, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		key := pickString(obj, "metric_key", "metricKey", "name", "key")
+		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		conf := pickFloat(obj, 0.7, "confidence", "score")
+		unit := pickString(obj, "unit")
+		text := pickString(obj, "value_text", "valueText", "value")
+		num, hasNum := pickNumber(obj, "value_number", "valueNumber", "numeric", "number", "value")
+
+		f := Field{
+			MetricKey:  key,
+			ValueText:  text,
+			Unit:       unit,
+			Confidence: conf,
+		}
+		if hasNum {
+			f.ValueNumber = &num
+			f.ValueText = ""
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+func pickString(obj map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		if raw, ok := obj[key]; ok {
+			if s, ok := raw.(string); ok {
+				return strings.TrimSpace(s)
+			}
+		}
+	}
+	return ""
+}
+
+func pickFloat(obj map[string]interface{}, fallback float64, keys ...string) float64 {
+	for _, key := range keys {
+		if v, ok := pickNumber(obj, key); ok {
+			return clamp01(v)
+		}
+	}
+	return fallback
+}
+
+func pickNumber(obj map[string]interface{}, keys ...string) (float64, bool) {
+	for _, key := range keys {
+		raw, ok := obj[key]
+		if !ok || raw == nil {
+			continue
+		}
+		switch v := raw.(type) {
+		case float64:
+			return v, true
+		case float32:
+			return float64(v), true
+		case int:
+			return float64(v), true
+		case int64:
+			return float64(v), true
+		case json.Number:
+			n, err := v.Float64()
+			if err == nil {
+				return n, true
+			}
+		case string:
+			n, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+			if err == nil {
+				return n, true
+			}
+		}
+	}
+	return 0, false
 }

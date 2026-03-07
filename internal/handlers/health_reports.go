@@ -47,6 +47,8 @@ func NewHealthReportCreateHandler(db *gorm.DB) http.HandlerFunc {
 			http.Error(w, "pet_id is required", http.StatusBadRequest)
 			return
 		}
+		// Keep pet_id consistent with client-side pet identity.
+		// We never generate or mutate pet_id here; we only persist the caller-provided value.
 		if len(req.ImageURLs) == 0 && len(req.ImageBase64) == 0 && len(req.MockVendorResults) == 0 {
 			http.Error(w, "image_urls or image_base64 or mock_vendor_results is required", http.StatusBadRequest)
 			return
@@ -205,9 +207,24 @@ func NewPetHealthProfileHandler(db *gorm.DB) http.HandlerFunc {
 			return
 		}
 
+		order := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("order")))
+		if order == "" {
+			order = "desc"
+		}
+		if order != "asc" && order != "desc" {
+			http.Error(w, "order must be asc or desc", http.StatusBadRequest)
+			return
+		}
+		reportOrder := "report_date DESC, created_at DESC"
+		observationOrder := "report_observations.created_at DESC"
+		if order == "asc" {
+			reportOrder = "report_date ASC, created_at ASC"
+			observationOrder = "report_observations.created_at ASC"
+		}
+
 		var reports []models.HealthReport
 		if err := db.Where("pet_id = ?", petID).
-			Order("report_date DESC").
+			Order(reportOrder).
 			Find(&reports).Error; err != nil {
 			http.Error(w, "failed to load reports: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -216,7 +233,7 @@ func NewPetHealthProfileHandler(db *gorm.DB) http.HandlerFunc {
 		var observations []models.ReportObservation
 		if err := db.Joins("JOIN health_reports ON health_reports.id = report_observations.report_id").
 			Where("health_reports.pet_id = ? AND report_observations.is_verified = ?", petID, true).
-			Order("report_observations.created_at DESC").
+			Order(observationOrder).
 			Find(&observations).Error; err != nil {
 			http.Error(w, "failed to load observations: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -236,6 +253,7 @@ func NewPetHealthProfileHandler(db *gorm.DB) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"pet_id":                petID,
+			"order":                 order,
 			"reports":               reports,
 			"verified_observations": observations,
 			"latest_by_metric":      latestByMetric,
