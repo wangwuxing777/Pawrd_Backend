@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/vf0429/Petwell_Backend/internal/models"
+	"github.com/vf0429/Petwell_Backend/internal/services/objectstore"
 	"github.com/vf0429/Petwell_Backend/internal/services/reportfusion"
 	"gorm.io/gorm"
 )
@@ -19,6 +20,7 @@ type healthReportCreateRequest struct {
 	ClinicName        string                      `json:"clinic_name"`
 	ReportDate        string                      `json:"report_date"`
 	ImageURLs         []string                    `json:"image_urls,omitempty"`
+	ImageObjectKeys   []string                    `json:"image_object_keys,omitempty"`
 	ImageBase64       []string                    `json:"image_base64,omitempty"`
 	MockVendorResults []reportfusion.VendorResult `json:"mock_vendor_results,omitempty"`
 }
@@ -49,8 +51,8 @@ func NewHealthReportCreateHandler(db *gorm.DB) http.HandlerFunc {
 		}
 		// Keep pet_id consistent with client-side pet identity.
 		// We never generate or mutate pet_id here; we only persist the caller-provided value.
-		if len(req.ImageURLs) == 0 && len(req.ImageBase64) == 0 && len(req.MockVendorResults) == 0 {
-			http.Error(w, "image_urls or image_base64 or mock_vendor_results is required", http.StatusBadRequest)
+		if len(req.ImageURLs) == 0 && len(req.ImageObjectKeys) == 0 && len(req.ImageBase64) == 0 && len(req.MockVendorResults) == 0 {
+			http.Error(w, "image_urls or image_object_keys or image_base64 or mock_vendor_results is required", http.StatusBadRequest)
 			return
 		}
 
@@ -62,6 +64,26 @@ func NewHealthReportCreateHandler(db *gorm.DB) http.HandlerFunc {
 				return
 			}
 			reportDate = parsed
+		}
+
+		if len(req.ImageObjectKeys) > 0 {
+			store, err := objectstore.NewCOSStoreFromEnv()
+			if err != nil {
+				http.Error(w, "cos not configured for image_object_keys: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			for _, key := range req.ImageObjectKeys {
+				key = strings.TrimSpace(key)
+				if key == "" {
+					continue
+				}
+				signedURL, _, err := store.PresignRead(key)
+				if err != nil {
+					http.Error(w, "failed to sign read url: "+err.Error(), http.StatusBadRequest)
+					return
+				}
+				req.ImageURLs = append(req.ImageURLs, signedURL)
+			}
 		}
 
 		var (
@@ -99,7 +121,7 @@ func NewHealthReportCreateHandler(db *gorm.DB) http.HandlerFunc {
 			ReportType:       normalizeReportType(req.ReportType),
 			ClinicName:       strings.TrimSpace(req.ClinicName),
 			ReportDate:       reportDate,
-			SourceImageCount: maxInt(len(req.ImageURLs), len(req.ImageBase64)),
+			SourceImageCount: maxInt(maxInt(len(req.ImageURLs), len(req.ImageBase64)), len(req.ImageObjectKeys)),
 			RawPayloadJSON:   string(rawJSON),
 			SchemaVersion:    "v1",
 			FusionVersion:    "v1",
