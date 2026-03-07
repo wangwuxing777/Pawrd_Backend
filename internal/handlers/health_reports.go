@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -93,7 +95,7 @@ func NewHealthReportCreateHandler(db *gorm.DB) http.HandlerFunc {
 		if len(req.MockVendorResults) > 0 {
 			vendorResults = req.MockVendorResults
 		} else {
-			ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+			ctx, cancel := context.WithTimeout(r.Context(), extractionTimeout())
 			defer cancel()
 			vendorResults, err = vendorClient.ExtractFromAll(ctx, reportfusion.ExtractRequest{
 				ImageURLs:   req.ImageURLs,
@@ -176,6 +178,20 @@ func NewHealthReportCreateHandler(db *gorm.DB) http.HandlerFunc {
 			"report": report,
 		})
 	}
+}
+
+func extractionTimeout() time.Duration {
+	// Keep request timeout aligned with vendor timeout to avoid premature context cancellation.
+	secs := 60
+	if raw := strings.TrimSpace(os.Getenv("REPORT_VENDOR_TIMEOUT_SECONDS")); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil && v > 0 {
+			secs = v + 15
+		}
+	}
+	if secs < 60 {
+		secs = 60
+	}
+	return time.Duration(secs) * time.Second
 }
 
 func NewHealthReportDetailHandler(db *gorm.DB) http.HandlerFunc {
