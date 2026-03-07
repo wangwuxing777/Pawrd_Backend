@@ -263,18 +263,17 @@ func decodeVendorFields(vendor VendorDefinition, body []byte) ([]Field, error) {
 
 	// OpenAI-compatible shape:
 	// { "choices":[{"message":{"content":"{\"fields\":[...]}"}}] }
+	// or content as array objects: [{"type":"text","text":"..."}]
 	var openAICompat struct {
 		Choices []struct {
 			Message struct {
-				Content string `json:"content"`
+				Content json.RawMessage `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(body, &openAICompat); err == nil && len(openAICompat.Choices) > 0 {
-		content := strings.TrimSpace(openAICompat.Choices[0].Message.Content)
-		content = strings.Trim(content, "`")
-		content = strings.TrimPrefix(content, "json")
-		content = strings.TrimSpace(content)
+		content := extractContentText(openAICompat.Choices[0].Message.Content)
+		content = normalizeContentPayload(content)
 		if content != "" {
 			var nested struct {
 				Fields []Field `json:"fields"`
@@ -293,7 +292,47 @@ func decodeVendorFields(vendor VendorDefinition, body []byte) ([]Field, error) {
 		return fields, nil
 	}
 
-	return nil, fmt.Errorf("unable to decode fields for vendor %s", vendor.VendorID)
+	snippet := strings.TrimSpace(string(body))
+	if len(snippet) > 500 {
+		snippet = snippet[:500] + "..."
+	}
+	return nil, fmt.Errorf("unable to decode fields for vendor %s, body=%s", vendor.VendorID, snippet)
+}
+
+func extractContentText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	var arr []map[string]interface{}
+	if err := json.Unmarshal(raw, &arr); err == nil {
+		parts := make([]string, 0, len(arr))
+		for _, item := range arr {
+			if text, ok := item["text"].(string); ok && strings.TrimSpace(text) != "" {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, "\n")
+	}
+	return ""
+}
+
+func normalizeContentPayload(content string) string {
+	content = strings.TrimSpace(content)
+	content = strings.Trim(content, "`")
+	content = strings.TrimSpace(content)
+	content = strings.TrimPrefix(content, "json")
+	content = strings.TrimSpace(content)
+	// keep only the first JSON object if model adds commentary
+	start := strings.Index(content, "{")
+	end := strings.LastIndex(content, "}")
+	if start >= 0 && end > start {
+		return strings.TrimSpace(content[start : end+1])
+	}
+	return content
 }
 
 func decodeLooseFieldsJSON(body []byte) []Field {
