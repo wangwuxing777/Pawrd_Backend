@@ -33,6 +33,12 @@ type ExtractRequest struct {
 }
 
 func NewVendorClient(timeout time.Duration) *VendorClient {
+	override := strings.TrimSpace(os.Getenv("REPORT_VENDOR_TIMEOUT_SECONDS"))
+	if override != "" {
+		if secs, err := strconv.Atoi(override); err == nil && secs > 0 {
+			timeout = time.Duration(secs) * time.Second
+		}
+	}
 	return &VendorClient{
 		httpClient: &http.Client{Timeout: timeout},
 		vendors:    loadVendorsFromEnv(),
