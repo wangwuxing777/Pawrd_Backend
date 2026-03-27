@@ -16,7 +16,13 @@ import (
 	"github.com/vf0429/Petwell_Backend/internal/services/rag"
 )
 
-const port = "8000"
+var port = "8000"
+
+func init() {
+	if p := os.Getenv("PORT"); p != "" {
+		port = p
+	}
+}
 
 func main() {
 	// Load Configuration
