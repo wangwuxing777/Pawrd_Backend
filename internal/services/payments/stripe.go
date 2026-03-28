@@ -6,7 +6,7 @@ import (
 
 	"github.com/stripe/stripe-go/v82"
 	"github.com/stripe/stripe-go/v82/paymentintent"
-	"github.com/vf0429/Petwell_Backend/internal/config"
+	"github.com/wangwuxing777/Pawrd_Backend/internal/config"
 )
 
 type StripeService struct {

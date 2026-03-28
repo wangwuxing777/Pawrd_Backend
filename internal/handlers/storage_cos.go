@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/vf0429/Petwell_Backend/internal/services/objectstore"
+	"github.com/wangwuxing777/Pawrd_Backend/internal/services/objectstore"
 )
 
 func NewCOSPresignUploadHandler() http.HandlerFunc {

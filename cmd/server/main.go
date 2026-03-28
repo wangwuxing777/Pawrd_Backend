@@ -8,12 +8,12 @@ import (
 	"os"
 	"time"
 
-	"github.com/vf0429/Petwell_Backend/internal/config"
-	"github.com/vf0429/Petwell_Backend/internal/handlers"
-	"github.com/vf0429/Petwell_Backend/internal/models"
-	"github.com/vf0429/Petwell_Backend/internal/services/chat"
-	"github.com/vf0429/Petwell_Backend/internal/services/places"
-	"github.com/vf0429/Petwell_Backend/internal/services/rag"
+	"github.com/wangwuxing777/Pawrd_Backend/internal/config"
+	"github.com/wangwuxing777/Pawrd_Backend/internal/handlers"
+	"github.com/wangwuxing777/Pawrd_Backend/internal/models"
+	"github.com/wangwuxing777/Pawrd_Backend/internal/services/chat"
+	"github.com/wangwuxing777/Pawrd_Backend/internal/services/places"
+	"github.com/wangwuxing777/Pawrd_Backend/internal/services/rag"
 )
 
 var port = "8000"

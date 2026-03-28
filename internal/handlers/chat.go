@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/vf0429/Petwell_Backend/internal/services/chat"
-	"github.com/vf0429/Petwell_Backend/internal/services/rag"
+	"github.com/wangwuxing777/Pawrd_Backend/internal/services/chat"
+	"github.com/wangwuxing777/Pawrd_Backend/internal/services/rag"
 )
 
 // chatAskRequest is what the frontend sends to POST /api/chat/ask

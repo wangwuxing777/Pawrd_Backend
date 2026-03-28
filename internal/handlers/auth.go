@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/vf0429/Petwell_Backend/internal/auth"
-	"github.com/vf0429/Petwell_Backend/internal/models"
+	"github.com/wangwuxing777/Pawrd_Backend/internal/auth"
+	"github.com/wangwuxing777/Pawrd_Backend/internal/models"
 	"golang.org/x/crypto/bcrypt"
 )
 

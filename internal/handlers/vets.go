@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/vf0429/Petwell_Backend/internal/services/places"
+	"github.com/wangwuxing777/Pawrd_Backend/internal/services/places"
 )
 
 type District struct {

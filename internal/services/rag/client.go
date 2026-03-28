@@ -7,8 +7,8 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/vf0429/Petwell_Backend/internal/config"
-	"github.com/vf0429/Petwell_Backend/internal/services/chat"
+	"github.com/wangwuxing777/Pawrd_Backend/internal/config"
+	"github.com/wangwuxing777/Pawrd_Backend/internal/services/chat"
 )
 
 // Client communicates with the Python RAG FastAPI service.

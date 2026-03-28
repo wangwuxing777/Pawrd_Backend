@@ -1,4 +1,4 @@
-module github.com/vf0429/Petwell_Backend
+module github.com/wangwuxing777/Pawrd_Backend
 
 go 1.24.0
 

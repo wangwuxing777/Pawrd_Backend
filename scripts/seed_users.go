@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/vf0429/Petwell_Backend/internal/models"
+	"github.com/wangwuxing777/Pawrd_Backend/internal/models"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"

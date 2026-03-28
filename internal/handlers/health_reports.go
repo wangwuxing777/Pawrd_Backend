@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/vf0429/Petwell_Backend/internal/models"
-	"github.com/vf0429/Petwell_Backend/internal/services/objectstore"
-	"github.com/vf0429/Petwell_Backend/internal/services/reportfusion"
+	"github.com/wangwuxing777/Pawrd_Backend/internal/models"
+	"github.com/wangwuxing777/Pawrd_Backend/internal/services/objectstore"
+	"github.com/wangwuxing777/Pawrd_Backend/internal/services/reportfusion"
 	"gorm.io/gorm"
 )
 

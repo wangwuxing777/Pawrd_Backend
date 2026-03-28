@@ -5,8 +5,8 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/vf0429/Petwell_Backend/internal/services/chat"
-	"github.com/vf0429/Petwell_Backend/internal/services/rag"
+	"github.com/wangwuxing777/Pawrd_Backend/internal/services/chat"
+	"github.com/wangwuxing777/Pawrd_Backend/internal/services/rag"
 )
 
 // legacyChatRequest matches what the iOS frontend currently sends.

@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/vf0429/Petwell_Backend/internal/config"
+	"github.com/wangwuxing777/Pawrd_Backend/internal/config"
 )
 
 const (

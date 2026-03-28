@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/vf0429/Petwell_Backend/internal/config"
-	"github.com/vf0429/Petwell_Backend/internal/services/shopify"
+	"github.com/wangwuxing777/Pawrd_Backend/internal/config"
+	"github.com/wangwuxing777/Pawrd_Backend/internal/services/shopify"
 )
 
 // ShopProduct represents the simplified product format for iOS

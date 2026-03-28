@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/vf0429/Petwell_Backend/internal/models"
+	"github.com/wangwuxing777/Pawrd_Backend/internal/models"
 
 	_ "github.com/mattn/go-sqlite3"
 )

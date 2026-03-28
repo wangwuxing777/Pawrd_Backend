@@ -5,7 +5,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/vf0429/Petwell_Backend/internal/config"
+	"github.com/wangwuxing777/Pawrd_Backend/internal/config"
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
