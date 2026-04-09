@@ -35,6 +35,7 @@ type BlogPost struct {
 	Content      string    `json:"content"`
 	ImageColor   string    `json:"imageColor"`
 	Likes        int       `json:"likes"`
+	Comments     int       `json:"comments"`
 	Timestamp    time.Time `json:"timestamp"`
 	ImageUrls    []string  `json:"imageUrls,omitempty"` // attached image URLs
 }

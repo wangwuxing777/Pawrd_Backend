@@ -20,8 +20,9 @@ type Post struct {
 	UpdatedAt    time.Time `json:"updatedAt"`
 
 	// Relationships
-	Images []PostImage `gorm:"foreignKey:PostID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"images,omitempty"`
-	Likes  []PostLike  `gorm:"foreignKey:PostID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"likes,omitempty"`
+	Images   []PostImage   `gorm:"foreignKey:PostID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"images,omitempty"`
+	Likes    []PostLike    `gorm:"foreignKey:PostID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"likes,omitempty"`
+	Comments []PostComment `gorm:"foreignKey:PostID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"comments,omitempty"`
 }
 
 // BeforeCreate generates UUID before inserting a new record

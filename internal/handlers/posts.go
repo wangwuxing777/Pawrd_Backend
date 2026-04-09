@@ -22,7 +22,12 @@ func NewPostsHandler(db *gorm.DB) http.HandlerFunc {
 		switch r.Method {
 		case http.MethodGet:
 			var posts []models.Post
-			if err := db.Preload("Images").Preload("Likes").Order("created_at DESC").Find(&posts).Error; err != nil {
+			if err := db.
+				Preload("Images").
+				Preload("Likes").
+				Preload("Comments").
+				Order("created_at DESC").
+				Find(&posts).Error; err != nil {
 				http.Error(w, "Failed to fetch posts: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
@@ -41,6 +46,7 @@ func NewPostsHandler(db *gorm.DB) http.HandlerFunc {
 					Content:      p.Content,
 					ImageColor:   p.ImageColor,
 					Likes:        len(p.Likes),
+					Comments:     len(p.Comments),
 					Timestamp:    p.CreatedAt,
 					ImageUrls:    imageUrls,
 				})
@@ -114,6 +120,7 @@ func NewPostsHandler(db *gorm.DB) http.HandlerFunc {
 				Content:      post.Content,
 				ImageColor:   post.ImageColor,
 				Likes:        0,
+				Comments:     0,
 				Timestamp:    post.CreatedAt,
 				ImageUrls:    body.ImageUrls,
 			}

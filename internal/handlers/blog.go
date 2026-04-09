@@ -72,7 +72,11 @@ func NewBlogHandler(db *gorm.DB) http.HandlerFunc {
 
 		// Fetch posts from database
 		var posts []models.Post
-		query := db.Preload("Images").Preload("Likes").Order("created_at DESC")
+		query := db.
+			Preload("Images").
+			Preload("Likes").
+			Preload("Comments").
+			Order("created_at DESC")
 
 		// Apply cursor pagination if provided
 		if cursor := r.URL.Query().Get("cursor"); cursor != "" {
@@ -128,11 +132,9 @@ func transformToFeedPost(post models.Post, currentUserID string) FeedPostRespons
 		})
 	}
 
-	// Count likes
+	// Count likes and comments
 	likeCount := len(post.Likes)
-
-	// For now, comments count is 0 (would need Comment model)
-	commentCount := 0
+	commentCount := len(post.Comments)
 
 	return FeedPostResponse{
 		ID:      post.ID,
