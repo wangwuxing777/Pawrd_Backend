@@ -12,6 +12,32 @@ import (
 	"github.com/google/uuid"
 )
 
+func resolvePublicBaseURL(r *http.Request, fallback string) string {
+	if r == nil {
+		return strings.TrimRight(fallback, "/")
+	}
+
+	host := strings.TrimSpace(r.Header.Get("X-Forwarded-Host"))
+	if host == "" {
+		host = strings.TrimSpace(r.Host)
+	}
+
+	proto := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto"))
+	if proto == "" {
+		if r.TLS != nil {
+			proto = "https"
+		} else {
+			proto = "http"
+		}
+	}
+
+	if host == "" {
+		return strings.TrimRight(fallback, "/")
+	}
+
+	return strings.TrimRight(fmt.Sprintf("%s://%s", proto, host), "/")
+}
+
 // NewMediaUploadHandler handles POST /media/upload — saves the uploaded file to
 // assets/uploads/ and returns a JSON response compatible with iOS MediaUploadResponse.
 func NewMediaUploadHandler(baseURL string) http.HandlerFunc {
@@ -61,7 +87,8 @@ func NewMediaUploadHandler(baseURL string) http.HandlerFunc {
 			return
 		}
 
-		fileURL := fmt.Sprintf("%s/uploads/%s", baseURL, filename)
+		publicBaseURL := resolvePublicBaseURL(r, baseURL)
+		fileURL := fmt.Sprintf("%s/uploads/%s", publicBaseURL, filename)
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
