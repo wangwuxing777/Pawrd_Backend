@@ -69,6 +69,8 @@ func main() {
 	mux.HandleFunc("/vaccines", handlers.VaccinesHandler)
 	mux.HandleFunc("/register", handlers.RegisterHandler)
 	mux.HandleFunc("/posts", handlers.NewPostsHandler(db))
+	mux.HandleFunc("/posts/{id}", handlers.NewPostDetailHandler(db))
+	mux.HandleFunc("/posts/{id}/like", handlers.NewPostLikeHandler(db))
 	mux.HandleFunc("/posts/{id}/comments", handlers.NewPostCommentsHandler(db))
 	mux.HandleFunc("/posts/{id}/comments/{commentId}", handlers.NewCommentDeleteHandler(db))
 

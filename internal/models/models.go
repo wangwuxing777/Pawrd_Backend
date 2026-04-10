@@ -29,6 +29,7 @@ type User struct {
 
 type BlogPost struct {
 	ID           string    `json:"id"`
+	AuthorID     string    `json:"authorId"`
 	AuthorName   string    `json:"authorName"`
 	AuthorAvatar string    `json:"authorAvatar"`
 	Title        string    `json:"title"`
@@ -38,6 +39,7 @@ type BlogPost struct {
 	Comments     int       `json:"comments"`
 	Timestamp    time.Time `json:"timestamp"`
 	ImageUrls    []string  `json:"imageUrls,omitempty"` // attached image URLs
+	IsLiked      bool      `json:"isLiked"`             // whether the requesting user has liked this post
 }
 
 type Clinic struct {
