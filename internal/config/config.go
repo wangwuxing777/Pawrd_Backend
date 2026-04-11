@@ -16,6 +16,8 @@ type Config struct {
 	DBUser                 string
 	DBPassword             string
 	DBName                 string
+	MerchantFacadeBaseURL  string
+	MerchantFacadeAppKey   string
 	ShopifyDomain          string
 	ShopifyStorefrontToken string
 	UseMockShopify         bool
@@ -41,6 +43,8 @@ func LoadConfig() *Config {
 		DBUser:                 getEnvOrDefault("DB_USER", "postgres"),
 		DBPassword:             getEnvOrDefault("DB_PASSWORD", "postgres"),
 		DBName:                 getEnvOrDefault("DB_NAME", "petwell"),
+		MerchantFacadeBaseURL:  strings.TrimSpace(getEnvOrDefault("MERCHANT_FACADE_BASE_URL", "http://127.0.0.1:8090")),
+		MerchantFacadeAppKey:   strings.TrimSpace(os.Getenv("MERCHANT_FACADE_APP_KEY")),
 		ShopifyDomain:          strings.TrimSpace(os.Getenv("SHOPIFY_DOMAIN")),
 		ShopifyStorefrontToken: strings.TrimSpace(os.Getenv("SHOPIFY_STOREFRONT_TOKEN")),
 		UseMockShopify:         os.Getenv("USE_MOCK_SHOPIFY") == "true",
