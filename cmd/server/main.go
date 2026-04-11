@@ -78,6 +78,8 @@ func main() {
 	// Auth endpoints
 	mux.HandleFunc("/api/auth/login", handlers.NewAuthLoginHandler())
 	mux.HandleFunc("/api/auth/register", handlers.NewAuthRegisterHandler())
+	mux.HandleFunc("/api/bookings", handlers.NewAppBookingsHandler(db, merchantVaccinationClient))
+	mux.HandleFunc("/api/bookings/{bookingID}", handlers.NewAppBookingDetailHandler(db, merchantVaccinationClient))
 	mux.HandleFunc("/clinics", handlers.NewClinicsHandler(cfg))
 	mux.HandleFunc("/emergency-clinics", handlers.NewEmergencyClinicsHandler(cfg))
 
