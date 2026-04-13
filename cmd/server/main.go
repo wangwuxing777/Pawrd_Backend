@@ -12,6 +12,7 @@ import (
 	"github.com/wangwuxing777/Pawrd_Backend/internal/handlers"
 	"github.com/wangwuxing777/Pawrd_Backend/internal/models"
 	"github.com/wangwuxing777/Pawrd_Backend/internal/services/chat"
+	"github.com/wangwuxing777/Pawrd_Backend/internal/services/merchant"
 	"github.com/wangwuxing777/Pawrd_Backend/internal/services/places"
 	"github.com/wangwuxing777/Pawrd_Backend/internal/services/rag"
 )
@@ -28,6 +29,7 @@ func main() {
 	// Load Configuration
 	cfg := config.LoadConfig()
 	ragClient := rag.NewClient(cfg)
+	merchantVaccinationClient := merchant.NewClient(cfg)
 
 	// Initialize chat session store (30-minute TTL)
 	sessionStore := chat.NewSessionStore(30 * time.Minute)
@@ -76,6 +78,8 @@ func main() {
 	// Auth endpoints
 	mux.HandleFunc("/api/auth/login", handlers.NewAuthLoginHandler())
 	mux.HandleFunc("/api/auth/register", handlers.NewAuthRegisterHandler())
+	mux.HandleFunc("/api/bookings", handlers.NewAppBookingsHandler(db, merchantVaccinationClient))
+	mux.HandleFunc("/api/bookings/{bookingID}", handlers.NewAppBookingDetailHandler(db, merchantVaccinationClient))
 	mux.HandleFunc("/clinics", handlers.NewClinicsHandler(cfg))
 	mux.HandleFunc("/emergency-clinics", handlers.NewEmergencyClinicsHandler(cfg))
 
@@ -117,6 +121,10 @@ func main() {
 	mux.HandleFunc("/api/medical/services", handlers.NewMedicalServicesHandler(db))
 	mux.HandleFunc("/api/medical/services/{category}", handlers.NewMedicalServiceDetailHandler(db))
 	mux.HandleFunc("/api/medical/admin/services/{id}", handlers.NewMedicalAdminUpdateHandler(db))
+	mux.HandleFunc("/api/medical/vaccinations/availability", handlers.NewVaccinationAvailabilityProxyHandler(merchantVaccinationClient))
+	mux.HandleFunc("/api/medical/vaccinations/bookings", handlers.NewVaccinationBookingCreateProxyHandler(merchantVaccinationClient))
+	mux.HandleFunc("/api/medical/vaccinations/bookings/{externalBookingID}", handlers.NewVaccinationBookingGetProxyHandler(merchantVaccinationClient))
+	mux.HandleFunc("/api/medical/vaccinations/bookings/{externalBookingID}/cancel", handlers.NewVaccinationBookingCancelProxyHandler(merchantVaccinationClient))
 
 	// Health report extraction + fusion handlers (profile backend pipeline)
 	mux.HandleFunc("/api/profile/storage/cos/presign-upload", handlers.NewCOSPresignUploadHandler())
