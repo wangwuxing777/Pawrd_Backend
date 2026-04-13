@@ -40,6 +40,7 @@ func InitDB(cfg *config.Config) (*gorm.DB, error) {
 		&PostComment{},
 		&MedicalService{},
 		&Partner{},
+		&AppBookingMirror{},
 		&HealthReport{},
 		&ReportObservation{},
 		&ReportVendorExtraction{},
