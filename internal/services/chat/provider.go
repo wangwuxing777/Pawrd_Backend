@@ -1,28 +1,11 @@
 package chat
 
-import "strings"
+import "github.com/wangwuxing777/Pawrd_Backend/internal/services/providercatalog"
 
 // DetectProvider detects a provider name from query text using keyword matching.
 // Returns the provider ID (e.g., "bluecross") or "" if none detected.
 func DetectProvider(query string) string {
-	lower := strings.ToLower(query)
-	switch {
-	case strings.Contains(lower, "blue cross"),
-		strings.Contains(lower, "bluecross"),
-		strings.Contains(lower, "藍十字"):
-		return "bluecross"
-	case strings.Contains(lower, "one degree"),
-		strings.Contains(lower, "onedegree"):
-		return "one_degree"
-	case strings.Contains(lower, "prudential"),
-		strings.Contains(lower, "pruchoice"),
-		strings.Contains(lower, "保誠"):
-		return "prudential"
-	case strings.Contains(lower, "bolttech"):
-		return "bolttech"
-	default:
-		return ""
-	}
+	return providercatalog.DetectProvider(query)
 }
 
 // ResolveProvider determines the effective provider using the priority chain:

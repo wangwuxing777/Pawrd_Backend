@@ -43,6 +43,9 @@ func InitDB(cfg *config.Config) (*gorm.DB, error) {
 		&HealthReport{},
 		&ReportObservation{},
 		&ReportVendorExtraction{},
+		&RagDocument{},
+		&RagChunk{},
+		&RagIngestRun{},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to auto migrate schema: %w", err)
