@@ -62,7 +62,7 @@ func LoadConfig() *Config {
 		DBPort:                         getEnvOrDefault("DB_PORT", "5432"),
 		DBUser:                         getEnvOrDefault("DB_USER", "postgres"),
 		DBPassword:                     getEnvOrDefault("DB_PASSWORD", "postgres"),
-		DBName:                         getEnvOrDefault("DB_NAME", "petwell"),
+		DBName:                         getEnvOrDefault("DB_NAME", "pawrd"),
 		MerchantFacadeBaseURL:          strings.TrimSpace(getEnvOrDefault("MERCHANT_FACADE_BASE_URL", "http://127.0.0.1:8090")),
 		MerchantFacadeAppKey:           strings.TrimSpace(os.Getenv("MERCHANT_FACADE_APP_KEY")),
 		ShopifyDomain:                  strings.TrimSpace(os.Getenv("SHOPIFY_DOMAIN")),

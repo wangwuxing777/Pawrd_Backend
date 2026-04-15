@@ -28,6 +28,15 @@ var (
 	serviceOnce     sync.Once
 )
 
+var bookingClinicBindingsByPublicClinicID = map[string]string{
+	"74":          "clinic_happypaws_hk",
+	"testclinics": "clinic_happypaws_hk",
+}
+
+var bookingClinicBindingsByPublicClinicName = map[string]string{
+	"testclinics": "clinic_happypaws_hk",
+}
+
 func getClinicsService(cfg *config.Config) *ClinicsService {
 	serviceOnce.Do(func() {
 		serviceInstance = &ClinicsService{}
@@ -98,6 +107,7 @@ func (s *ClinicsService) loadClinics(cfg *config.Config) {
 			Longitude:      record[11],
 			Rating:         record[12],
 		}
+		c.BookingClinicID = bookingClinicIDForClinic(c)
 
 		if len(record) > 13 {
 			c.GooglePlaceID = record[13]
@@ -273,6 +283,22 @@ func (s *ClinicsService) loadClinics(cfg *config.Config) {
 	fmt.Printf("Loaded %d clinics from CSV\n", len(clinics))
 }
 
+func bookingClinicIDForClinic(clinic models.Clinic) string {
+	if bindingID := bookingClinicIDForPublicClinicID(clinic.ClinicID); bindingID != "" {
+		return bindingID
+	}
+	normalizedName := strings.ToLower(strings.TrimSpace(clinic.Name))
+	if bindingID := strings.TrimSpace(bookingClinicBindingsByPublicClinicName[normalizedName]); bindingID != "" {
+		return bindingID
+	}
+	return ""
+}
+
+func bookingClinicIDForPublicClinicID(publicClinicID string) string {
+	normalizedID := strings.ToLower(strings.TrimSpace(publicClinicID))
+	return strings.TrimSpace(bookingClinicBindingsByPublicClinicID[normalizedID])
+}
+
 func (s *ClinicsService) saveClinics() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -339,7 +365,15 @@ func NewClinicsHandler(cfg *config.Config) http.HandlerFunc {
 		svc.mu.RLock()
 		defer svc.mu.RUnlock()
 
-		if err := json.NewEncoder(w).Encode(svc.clinics); err != nil {
+		response := make([]models.Clinic, len(svc.clinics))
+		copy(response, svc.clinics)
+		for i := range response {
+			if response[i].BookingClinicID == "" {
+				response[i].BookingClinicID = bookingClinicIDForClinic(response[i])
+			}
+		}
+
+		if err := json.NewEncoder(w).Encode(response); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 	}
