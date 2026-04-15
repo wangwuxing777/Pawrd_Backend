@@ -43,18 +43,19 @@ type BlogPost struct {
 }
 
 type Clinic struct {
-	ClinicID       string `json:"clinic_id"`
-	Name           string `json:"name"`
-	Address        string `json:"address"`
-	PhoneRegular   string `json:"phone_regular"`
-	PhoneEmergency string `json:"phone_emergency"`
-	Whatsapp       string `json:"whatsapp"`
-	OpeningHours   string `json:"opening_hours"`
-	Emergency24h   string `json:"emergency_24h"`
-	WebsiteURL     string `json:"website_url"`
-	ApplemapURL    string `json:"applemap_url"`
-	Latitude       string `json:"latitude"`
-	Longitude      string `json:"longitude"`
+	ClinicID        string `json:"clinic_id"`
+	BookingClinicID string `json:"booking_clinic_id,omitempty"`
+	Name            string `json:"name"`
+	Address         string `json:"address"`
+	PhoneRegular    string `json:"phone_regular"`
+	PhoneEmergency  string `json:"phone_emergency"`
+	Whatsapp        string `json:"whatsapp"`
+	OpeningHours    string `json:"opening_hours"`
+	Emergency24h    string `json:"emergency_24h"`
+	WebsiteURL      string `json:"website_url"`
+	ApplemapURL     string `json:"applemap_url"`
+	Latitude        string `json:"latitude"`
+	Longitude       string `json:"longitude"`
 	Rating          string `json:"rating"`
 	PhotoURL        string `json:"photo_url"`
 	GooglePlaceID   string `json:"google_place_id"`

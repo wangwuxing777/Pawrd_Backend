@@ -3,9 +3,12 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/wangwuxing777/Pawrd_Backend/internal/config"
@@ -25,11 +28,92 @@ func init() {
 	}
 }
 
+func bookingReconcileLoopConfig() (bool, time.Duration, int, string, bool) {
+	secret := strings.TrimSpace(os.Getenv("BOOKING_SYNC_SHARED_SECRET"))
+	if secret == "" {
+		return false, 0, 0, "", false
+	}
+	rawInterval := strings.TrimSpace(os.Getenv("BOOKING_RECONCILE_INTERVAL_SECONDS"))
+	if rawInterval == "" {
+		return false, 0, 0, "", false
+	}
+	seconds, err := strconv.Atoi(rawInterval)
+	if err != nil || seconds <= 0 {
+		return false, 0, 0, "", false
+	}
+	limit := 50
+	if rawLimit := strings.TrimSpace(os.Getenv("BOOKING_RECONCILE_LIMIT")); rawLimit != "" {
+		if parsed, err := strconv.Atoi(rawLimit); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+	syncState := strings.TrimSpace(strings.ToLower(os.Getenv("BOOKING_RECONCILE_SYNC_STATE")))
+	if syncState != "" && syncState != "stale" && syncState != "never_synced" && syncState != "sync_error" {
+		syncState = ""
+	}
+	force := strings.EqualFold(strings.TrimSpace(os.Getenv("BOOKING_RECONCILE_FORCE")), "true")
+	return true, time.Duration(seconds) * time.Second, limit, syncState, force
+}
+
+func bookingFreshnessWindowConfig() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("BOOKING_MIRROR_FRESHNESS_SECONDS"))
+	if raw == "" {
+		return 2 * time.Minute
+	}
+	seconds, err := strconv.Atoi(raw)
+	if err != nil || seconds <= 0 {
+		return 2 * time.Minute
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func startBookingReconcileLoop(listenPort string) {
+	enabled, interval, limit, syncState, force := bookingReconcileLoopConfig()
+	if !enabled {
+		return
+	}
+	secret := strings.TrimSpace(os.Getenv("BOOKING_SYNC_SHARED_SECRET"))
+	query := fmt.Sprintf("limit=%d", limit)
+	if syncState != "" {
+		query += "&sync_state=" + syncState
+	}
+	if force {
+		query += "&force=true"
+	}
+	url := fmt.Sprintf("http://127.0.0.1:%s/api/bookings/reconcile-stale?%s", listenPort, query)
+	go func() {
+		log.Printf("Booking reconcile loop enabled: interval=%s limit=%d sync_state=%s force=%v", interval, limit, syncState, force)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		client := &http.Client{Timeout: 30 * time.Second}
+		for range ticker.C {
+			req, err := http.NewRequest(http.MethodPost, url, nil)
+			if err != nil {
+				log.Printf("Booking reconcile loop request build failed: %v", err)
+				continue
+			}
+			req.Header.Set("X-Booking-Sync-Token", secret)
+			req.Header.Set("X-Request-ID", "booking-reconcile-runner")
+			resp, err := client.Do(req)
+			if err != nil {
+				log.Printf("Booking reconcile loop request failed: %v", err)
+				continue
+			}
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode >= 300 {
+				log.Printf("Booking reconcile loop non-2xx status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+			}
+		}
+	}()
+}
+
 func main() {
 	// Load Configuration
 	cfg := config.LoadConfig()
 	ragClient := rag.NewClient(cfg)
 	merchantVaccinationClient := merchant.NewClient(cfg)
+	handlers.SetMirrorFreshnessWindow(bookingFreshnessWindowConfig())
 
 	// Initialize chat session store (30-minute TTL)
 	sessionStore := chat.NewSessionStore(30 * time.Minute)
@@ -84,6 +168,8 @@ func main() {
 	mux.HandleFunc("/api/auth/register", handlers.NewAuthRegisterHandler())
 	mux.HandleFunc("/api/bookings", handlers.NewAppBookingsHandler(db, merchantVaccinationClient))
 	mux.HandleFunc("/api/bookings/{bookingID}", handlers.NewAppBookingDetailHandler(db, merchantVaccinationClient))
+	mux.HandleFunc("/api/bookings/sync", handlers.NewAppBookingSyncHandler(db, os.Getenv("BOOKING_SYNC_SHARED_SECRET")))
+	mux.HandleFunc("/api/bookings/reconcile-stale", handlers.NewAppBookingReconcileHandler(db, merchantVaccinationClient, os.Getenv("BOOKING_SYNC_SHARED_SECRET")))
 	mux.HandleFunc("/clinics", handlers.NewClinicsHandler(cfg))
 	mux.HandleFunc("/emergency-clinics", handlers.NewEmergencyClinicsHandler(cfg))
 
@@ -161,7 +247,9 @@ func main() {
 	mux.Handle("/api/v1", v1Handler)
 	mux.Handle("/api/v1/", v1Handler)
 
-	fmt.Printf("Pawrd Backend running at http://localhost:%s\n", port)
+	startBookingReconcileLoop(port)
+
+	fmt.Printf("PetWell Backend running at http://localhost:%s\n", port)
 	fmt.Println("Chat endpoints:")
 	fmt.Println("  POST /api/chat/session          - Create session")
 	fmt.Println("  POST /api/chat/session/{id}/provider - Select provider")
