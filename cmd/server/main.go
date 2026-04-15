@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -111,7 +112,6 @@ func startBookingReconcileLoop(listenPort string) {
 func main() {
 	// Load Configuration
 	cfg := config.LoadConfig()
-	ragClient := rag.NewClient(cfg)
 	merchantVaccinationClient := merchant.NewClient(cfg)
 	handlers.SetMirrorFreshnessWindow(bookingFreshnessWindowConfig())
 
@@ -137,6 +137,15 @@ func main() {
 		SeedDatabase(db)
 		fmt.Println("Seeding complete. Exiting...")
 		return
+	}
+
+	ragClient := rag.NewClient(cfg, db)
+	if cfg.HKInsuranceRAGEnabled && cfg.HKInsuranceRAGRebuildOnStart {
+		if err := ragClient.Rebuild(context.Background()); err != nil {
+			log.Printf("HK insurance RAG rebuild on start failed: %v", err)
+		} else {
+			log.Printf("HK insurance RAG rebuild on start completed")
+		}
 	}
 
 	// Initialize new Gin router for scenarios API

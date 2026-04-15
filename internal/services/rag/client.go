@@ -1,24 +1,25 @@
 package rag
 
 import (
-	"bytes"
-	"encoding/json"
+	"context"
 	"fmt"
-	"io"
-	"net/http"
 
 	"github.com/wangwuxing777/Pawrd_Backend/internal/config"
 	"github.com/wangwuxing777/Pawrd_Backend/internal/services/chat"
+	"github.com/wangwuxing777/Pawrd_Backend/internal/services/providercatalog"
+	"gorm.io/gorm"
 )
 
-// Client communicates with the Python RAG FastAPI service.
+// Client serves the Go-owned HK insurance RAG path.
 type Client struct {
-	Config *config.Config
+	Config  *config.Config
+	runtime *localRuntime
 }
 
-// Request is the old simple request (kept for backward compatibility).
-type Request struct {
-	Query string `json:"query"`
+type Service interface {
+	Ask(query string) (*Response, error)
+	AskWithContext(req ChatRequest) (*ChatResponse, error)
+	GetProviders() (*ProvidersResponse, error)
 }
 
 // ChatRequest is the full request format matching the updated RAG API.
@@ -29,7 +30,6 @@ type ChatRequest struct {
 	ChatHistory []chat.ChatTurn `json:"chat_history,omitempty"`
 }
 
-// Response is the old simple response (kept for backward compatibility).
 type Response struct {
 	Answer  string   `json:"answer"`
 	Sources []string `json:"sources"`
@@ -45,8 +45,9 @@ type ChatResponse struct {
 
 // Provider represents a single insurance provider.
 type Provider struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	HasData bool   `json:"has_data"`
 }
 
 // ProvidersResponse is the response from GET /providers.
@@ -54,82 +55,57 @@ type ProvidersResponse struct {
 	Providers []Provider `json:"providers"`
 }
 
-func NewClient(cfg *config.Config) *Client {
+func NewClient(cfg *config.Config, db ...*gorm.DB) *Client {
+	var database *gorm.DB
+	if len(db) > 0 {
+		database = db[0]
+	}
 	return &Client{
-		Config: cfg,
+		Config:  cfg,
+		runtime: newLocalRuntime(cfg, database, nil, nil),
 	}
 }
 
-// Ask sends a simple query (backward compatible).
+func (c *Client) Rebuild(ctx context.Context) error {
+	if c.runtime == nil {
+		return nil
+	}
+	return c.runtime.Rebuild(ctx)
+}
+
+// Ask sends a simple query through the Go runtime.
 func (c *Client) Ask(query string) (*Response, error) {
-	reqBody := Request{Query: query}
-	jsonBody, err := json.Marshal(reqBody)
+	if c.Config == nil || !c.Config.HKInsuranceRAGEnabled {
+		return nil, fmt.Errorf("HK insurance Go RAG is disabled")
+	}
+	resp, err := c.runtime.AskWithContext(context.Background(), ChatRequest{Query: query})
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+		return nil, err
 	}
-
-	resp, err := http.Post(c.Config.RAGServiceURL+"/ask", "application/json", bytes.NewBuffer(jsonBody))
-	if err != nil {
-		return nil, fmt.Errorf("failed to call RAG service: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("RAG service returned status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var ragResp Response
-	if err := json.NewDecoder(resp.Body).Decode(&ragResp); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	return &ragResp, nil
+	return &Response{Answer: resp.Answer, Sources: resp.Sources}, nil
 }
 
-// AskWithContext sends a query with session context and chat history.
+// AskWithContext sends a query with session context and chat history through
+// the Go runtime.
 func (c *Client) AskWithContext(req ChatRequest) (*ChatResponse, error) {
-	jsonBody, err := json.Marshal(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	if c.Config == nil || !c.Config.HKInsuranceRAGEnabled {
+		return nil, fmt.Errorf("HK insurance Go RAG is disabled")
 	}
-
-	resp, err := http.Post(c.Config.RAGServiceURL+"/ask", "application/json", bytes.NewBuffer(jsonBody))
-	if err != nil {
-		return nil, fmt.Errorf("failed to call RAG service: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("RAG service returned status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var ragResp ChatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&ragResp); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	return &ragResp, nil
+	return c.runtime.AskWithContext(context.Background(), req)
 }
 
-// GetProviders fetches the list of available providers from the RAG service.
+// GetProviders returns the current provider catalog from the Go-owned source corpus.
 func (c *Client) GetProviders() (*ProvidersResponse, error) {
-	resp, err := http.Get(c.Config.RAGServiceURL + "/providers")
-	if err != nil {
-		return nil, fmt.Errorf("failed to call RAG providers: %w", err)
+	providerList := providercatalog.BuildProviderList(c.Config.HKInsuranceRAGDataPath)
+	result := &ProvidersResponse{
+		Providers: make([]Provider, 0, len(providerList)),
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("RAG providers returned status %d: %s", resp.StatusCode, string(body))
+	for _, provider := range providerList {
+		result.Providers = append(result.Providers, Provider{
+			ID:      provider.ID,
+			Name:    provider.Name,
+			HasData: provider.HasData,
+		})
 	}
-
-	var result ProvidersResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("failed to decode providers: %w", err)
-	}
-
-	return &result, nil
+	return result, nil
 }

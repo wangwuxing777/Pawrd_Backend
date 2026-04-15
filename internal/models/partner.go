@@ -36,7 +36,7 @@ type Partner struct {
 	District     string        `json:"district"`     // 地区（如：中西区、湾仔区）
 	Message      string        `json:"message"`      // 商家补充说明
 	Status       PartnerStatus `json:"status" gorm:"default:'pending'"`
-	APIKey       string        `json:"api_key,omitempty" gorm:"uniqueIndex"`
+	APIKey       *string       `json:"api_key,omitempty" gorm:"uniqueIndex"`
 	AdminNote    string        `json:"admin_note,omitempty"` // 内部审核备注
 	CreatedAt    time.Time     `json:"created_at"`
 	UpdatedAt    time.Time     `json:"updated_at"`

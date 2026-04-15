@@ -111,7 +111,7 @@ func NewChatSelectProviderHandler(store *chat.SessionStore) http.HandlerFunc {
 
 // NewChatProvidersHandler returns the list of available insurance providers.
 // GET /api/chat/providers → { providers: [...] }
-func NewChatProvidersHandler(ragClient *rag.Client) http.HandlerFunc {
+func NewChatProvidersHandler(ragService rag.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		EnableCors(&w)
 		if r.Method == http.MethodOptions {
@@ -122,7 +122,7 @@ func NewChatProvidersHandler(ragClient *rag.Client) http.HandlerFunc {
 			return
 		}
 
-		providers, err := ragClient.GetProviders()
+		providers, err := ragService.GetProviders()
 		if err != nil {
 			log.Printf("[Chat] Error fetching providers: %v", err)
 			http.Error(w, fmt.Sprintf("Failed to fetch providers: %v", err), http.StatusInternalServerError)
@@ -136,7 +136,7 @@ func NewChatProvidersHandler(ragClient *rag.Client) http.HandlerFunc {
 
 // NewChatAskHandler handles the main chat query with session context.
 // POST /api/chat/ask → { answer, sources, active_provider, session_id }
-func NewChatAskHandler(store *chat.SessionStore, ragClient *rag.Client) http.HandlerFunc {
+func NewChatAskHandler(store *chat.SessionStore, ragService rag.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		EnableCors(&w)
 		if r.Method == http.MethodOptions {
@@ -186,7 +186,7 @@ func NewChatAskHandler(store *chat.SessionStore, ragClient *rag.Client) http.Han
 		}
 
 		// Call RAG service
-		ragResp, err := ragClient.AskWithContext(ragReq)
+		ragResp, err := ragService.AskWithContext(ragReq)
 		if err != nil {
 			log.Printf("[Chat] RAG error: %v", err)
 			http.Error(w, fmt.Sprintf("RAG service error: %v", err), http.StatusInternalServerError)
