@@ -27,7 +27,7 @@ type legacyChatResponse struct {
 
 // NewRAGHandler handles POST /api/chat with automatic session management.
 // The frontend only needs to send { query, session_id? } — the backend handles everything else.
-func NewRAGHandler(client *rag.Client, store *chat.SessionStore) http.HandlerFunc {
+func NewRAGHandler(client rag.Service, store *chat.SessionStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		EnableCors(&w)
 		if r.Method == http.MethodOptions {
