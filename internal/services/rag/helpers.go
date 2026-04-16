@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/wangwuxing777/Pawrd_Backend/internal/services/chat"
 )
@@ -60,4 +61,11 @@ func FormatChatHistory(chatHistory []chat.ChatTurn, maxTurns int) string {
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+func sanitizeUTF8(text string) string {
+	if utf8.ValidString(text) {
+		return text
+	}
+	return strings.ToValidUTF8(text, "�")
 }

@@ -287,6 +287,7 @@ func (r *localRuntime) loadDocumentRecord(ctx context.Context, path, dataRoot st
 	if err != nil {
 		return documentRecord{}, err
 	}
+	contentText := sanitizeUTF8(string(content))
 
 	chunks, err := r.loadDocument(path, dataRoot)
 	if err != nil {
@@ -310,7 +311,7 @@ func (r *localRuntime) loadDocumentRecord(ctx context.Context, path, dataRoot st
 	if strings.Contains(strings.ToLower(sourceName), "plans_pricing") {
 		docType = "pricing_table"
 	}
-	language := detectDocumentLanguage(sourceName, string(content))
+	language := detectDocumentLanguage(sourceName, contentText)
 
 	if r.embedder != nil {
 		texts := make([]string, 0, len(chunks))
@@ -336,7 +337,7 @@ func (r *localRuntime) loadDocumentRecord(ctx context.Context, path, dataRoot st
 		SourceName:  sourceName,
 		Language:    language,
 		DocType:     docType,
-		ContentHash: hashText(string(content)),
+		ContentHash: hashText(contentText),
 		Chunks:      chunks,
 	}, nil
 }
@@ -346,6 +347,7 @@ func (r *localRuntime) loadDocument(path, dataRoot string) ([]indexedChunk, erro
 	if err != nil {
 		return nil, err
 	}
+	contentText := sanitizeUTF8(string(content))
 
 	relativePath, err := filepath.Rel(dataRoot, path)
 	if err != nil {
@@ -361,10 +363,10 @@ func (r *localRuntime) loadDocument(path, dataRoot string) ([]indexedChunk, erro
 	}
 
 	sourceName := filepath.Base(path)
-	language := detectDocumentLanguage(sourceName, string(content))
-	sections := splitMarkdownSections(string(content))
+	language := detectDocumentLanguage(sourceName, contentText)
+	sections := splitMarkdownSections(contentText)
 	if strings.Contains(strings.ToLower(sourceName), "plans_pricing") {
-		sections = []markdownSection{{Path: "", Text: string(content)}}
+		sections = []markdownSection{{Path: "", Text: contentText}}
 	}
 
 	chunks := make([]indexedChunk, 0, len(sections))

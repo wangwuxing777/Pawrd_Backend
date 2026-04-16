@@ -3,6 +3,7 @@ package rag
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/wangwuxing777/Pawrd_Backend/internal/services/chat"
 )
@@ -46,5 +47,16 @@ func TestFormatChatHistory(t *testing.T) {
 	}
 	if !strings.Contains(got, "...") {
 		t.Fatalf("expected long assistant turn to be truncated, got %q", got)
+	}
+}
+
+func TestSanitizeUTF8(t *testing.T) {
+	raw := string([]byte{'A', 0xa3, 'B'})
+	got := sanitizeUTF8(raw)
+	if !utf8.ValidString(got) {
+		t.Fatalf("expected valid UTF-8 after sanitization, got %q", got)
+	}
+	if !strings.Contains(got, "A") || !strings.Contains(got, "B") {
+		t.Fatalf("expected surrounding content preserved, got %q", got)
 	}
 }
