@@ -14,6 +14,14 @@ import (
 	"github.com/wangwuxing777/Pawrd_Backend/internal/services/rag"
 )
 
+type panicRAGService struct{}
+
+func (panicRAGService) Ask(string) (*rag.Response, error) { panic("boom ask") }
+func (panicRAGService) AskWithContext(rag.ChatRequest) (*rag.ChatResponse, error) {
+	panic("boom ask with context")
+}
+func (panicRAGService) GetProviders() (*rag.ProvidersResponse, error) { panic("boom providers") }
+
 func TestChatProvidersHandlerUsesLocalCatalog(t *testing.T) {
 	root := t.TempDir()
 	for _, name := range []string{"bluecross", "MSIG"} {
@@ -107,5 +115,23 @@ func TestChatAskHandlerUsesLocalGoRuntime(t *testing.T) {
 	}
 	if response.Answer == "" {
 		t.Fatal("expected non-empty answer")
+	}
+}
+
+func TestChatAskHandlerRecoversFromPanic(t *testing.T) {
+	store := chat.NewSessionStore(0)
+	payload, _ := json.Marshal(map[string]string{
+		"query": "hello",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/chat/ask", bytes.NewReader(payload))
+	rec := httptest.NewRecorder()
+
+	NewChatAskHandler(store, panicRAGService{}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); body == "" {
+		t.Fatal("expected panic error body")
 	}
 }

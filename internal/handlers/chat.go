@@ -138,6 +138,7 @@ func NewChatProvidersHandler(ragService rag.Service) http.HandlerFunc {
 // POST /api/chat/ask → { answer, sources, active_provider, session_id }
 func NewChatAskHandler(store *chat.SessionStore, ragService rag.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		defer recoverHandlerPanic(w, r, "Chat")
 		EnableCors(&w)
 		if r.Method == http.MethodOptions {
 			return

@@ -29,6 +29,7 @@ type legacyChatResponse struct {
 // The frontend only needs to send { query, session_id? } — the backend handles everything else.
 func NewRAGHandler(client rag.Service, store *chat.SessionStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		defer recoverHandlerPanic(w, r, "RAG")
 		EnableCors(&w)
 		if r.Method == http.MethodOptions {
 			return
