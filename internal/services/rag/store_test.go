@@ -54,6 +54,55 @@ func TestDBStoreRebuildAndLoad(t *testing.T) {
 	}
 }
 
+func TestDBStoreRebuildSanitizesInvalidUTF8BeforePersist(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&models.RagDocument{}, &models.RagChunk{}, &models.RagIngestRun{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	store := newDBStore(db)
+	invalid := string([]byte{'A', 0xa3, 'B'})
+	docs := []documentRecord{
+		{
+			Provider:    invalid,
+			SourcePath:  invalid,
+			SourceName:  invalid,
+			Language:    "zh",
+			DocType:     "policy",
+			ContentHash: invalid,
+			Chunks: []indexedChunk{
+				{
+					ID:        "chunk-1",
+					Provider:  invalid,
+					Source:    invalid,
+					Language:  "zh",
+					Section:   invalid,
+					Text:      invalid,
+					Embedding: []float64{1, 2, 3},
+				},
+			},
+		},
+	}
+
+	if err := store.Rebuild(context.Background(), "assets/rag/hk_insurance", docs); err != nil {
+		t.Fatalf("rebuild should sanitize invalid UTF-8 before persist: %v", err)
+	}
+
+	loaded, err := store.LoadChunks(context.Background())
+	if err != nil {
+		t.Fatalf("load chunks: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("expected one chunk, got %d", len(loaded))
+	}
+	if loaded[0].Text == invalid {
+		t.Fatalf("expected persisted text to be sanitized, got raw invalid string %q", loaded[0].Text)
+	}
+}
+
 func mustWriteFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

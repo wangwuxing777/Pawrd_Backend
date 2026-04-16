@@ -88,12 +88,12 @@ func (s *dbStore) Rebuild(ctx context.Context, dataPath string, docs []documentR
 	chunkCount := 0
 	for _, doc := range docs {
 		document := models.RagDocument{
-			Provider:    doc.Provider,
-			SourcePath:  doc.SourcePath,
-			SourceName:  doc.SourceName,
-			Language:    doc.Language,
-			DocType:     doc.DocType,
-			ContentHash: doc.ContentHash,
+			Provider:    sanitizeUTF8(doc.Provider),
+			SourcePath:  sanitizeUTF8(doc.SourcePath),
+			SourceName:  sanitizeUTF8(doc.SourceName),
+			Language:    sanitizeUTF8(doc.Language),
+			DocType:     sanitizeUTF8(doc.DocType),
+			ContentHash: sanitizeUTF8(doc.ContentHash),
 		}
 		if err := tx.Create(&document).Error; err != nil {
 			tx.Rollback()
@@ -110,14 +110,14 @@ func (s *dbStore) Rebuild(ctx context.Context, dataPath string, docs []documentR
 			record := models.RagChunk{
 				ID:            chunk.ID,
 				DocumentID:    document.ID,
-				Provider:      chunk.Provider,
-				SourceName:    chunk.Source,
-				Language:      chunk.Language,
-				SectionPath:   chunk.Section,
+				Provider:      sanitizeUTF8(chunk.Provider),
+				SourceName:    sanitizeUTF8(chunk.Source),
+				Language:      sanitizeUTF8(chunk.Language),
+				SectionPath:   sanitizeUTF8(chunk.Section),
 				ChunkIndex:    idx,
-				Body:          chunk.Text,
+				Body:          sanitizeUTF8(chunk.Text),
 				BodyHash:      hashText(chunk.Text),
-				EmbeddingJSON: string(embeddingJSON),
+				EmbeddingJSON: sanitizeUTF8(string(embeddingJSON)),
 			}
 			if err := tx.Create(&record).Error; err != nil {
 				tx.Rollback()
