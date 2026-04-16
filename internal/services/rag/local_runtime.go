@@ -55,10 +55,14 @@ func newLocalRuntime(cfg *config.Config, db *gorm.DB, embedder embedder, complet
 		cfg = &config.Config{}
 	}
 	if embedder == nil && strings.TrimSpace(cfg.HKInsuranceRAGEmbeddingBaseURL) != "" {
-		embedder = newOpenAIEmbedder(cfg)
+		if resolved := newOpenAIEmbedder(cfg); resolved != nil {
+			embedder = resolved
+		}
 	}
 	if completer == nil && strings.TrimSpace(cfg.HKInsuranceRAGLLMBaseURL) != "" {
-		completer = newOpenAICompleter(cfg)
+		if resolved := newOpenAICompleter(cfg); resolved != nil {
+			completer = resolved
+		}
 	}
 	return &localRuntime{
 		cfg:       cfg,

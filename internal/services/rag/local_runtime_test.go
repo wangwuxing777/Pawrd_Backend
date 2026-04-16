@@ -160,6 +160,22 @@ func TestBuildQuestionBriefChronicCondition(t *testing.T) {
 	}
 }
 
+func TestNewLocalRuntimeDoesNotStoreTypedNilEmbedderOrCompleter(t *testing.T) {
+	runtime := newLocalRuntime(&config.Config{
+		HKInsuranceRAGEmbeddingBaseURL: "https://api.siliconflow.cn/v1",
+		HKInsuranceRAGEmbeddingAPIKey:  "",
+		HKInsuranceRAGLLMBaseURL:       "https://api.siliconflow.cn/v1",
+		HKInsuranceRAGLLMAPIKey:        "",
+	}, nil, nil, nil)
+
+	if runtime.embedder != nil {
+		t.Fatal("expected embedder to stay nil when API key is missing")
+	}
+	if runtime.completer != nil {
+		t.Fatal("expected completer to stay nil when API key is missing")
+	}
+}
+
 func mustWrite(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
