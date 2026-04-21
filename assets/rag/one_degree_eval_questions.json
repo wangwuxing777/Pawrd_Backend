@@ -1,0 +1,284 @@
+[
+  {
+    "id": "od_001",
+    "category": "waiting_period",
+    "question": "OneDegree 的標準等候期是幾多日？",
+    "expected_provider": "one_degree",
+    "gold_facts": [
+      "標準等候期為 28 天。",
+      "28 天等候期適用於所有意外、受傷和疾病。",
+      "癌症、癲癇、四肢癱瘓、髕骨脫臼屬於例外，不跟一般 28 天規則完全相同。"
+    ],
+    "source_refs": [
+      "assets/rag/hk_insurance/one_degree/one_degree_policy.md:348-356"
+    ]
+  },
+  {
+    "id": "od_002",
+    "category": "scenario",
+    "question": "如果寵物在投保第 10 天因跌倒骨折，OneDegree 會賠嗎？",
+    "expected_provider": "one_degree",
+    "gold_facts": [
+      "不會賠，因為意外、受傷在首 28 天標準等候期內不受保。",
+      "條款明確舉例說明第 10 天或第 20 天發生意外都屬於等候期內。",
+      "回答應明確指出原因是等待期，而不是籠統地說不保。"
+    ],
+    "source_refs": [
+      "assets/rag/hk_insurance/one_degree/one_degree_policy.md:350-356"
+    ]
+  },
+  {
+    "id": "od_003",
+    "category": "waiting_period",
+    "question": "OneDegree 的癌症等候期是幾多日？",
+    "expected_provider": "one_degree",
+    "gold_facts": [
+      "癌症（惡性腫瘤）的等候期為 180 天。",
+      "癌症是一般 28 天標準等候期的例外之一。",
+      "若在 180 天前已有症狀、確診、用藥、醫療建議或治療，癌症現金保障不符合條件。"
+    ],
+    "source_refs": [
+      "assets/rag/hk_insurance/one_degree/one_degree_policy.md:356-356",
+      "assets/rag/hk_insurance/one_degree/one_degree_policy.md:197-209"
+    ]
+  },
+  {
+    "id": "od_004",
+    "category": "waiting_period",
+    "question": "MRI 和 CT 在 OneDegree 的等候期是幾多日？",
+    "expected_provider": "one_degree",
+    "gold_facts": [
+      "MRI 和 CT 的等候期為 180 天。",
+      "回答不能把 MRI / CT 說成一般 28 天。"
+    ],
+    "source_refs": [
+      "assets/rag/hk_insurance/one_degree/one_degree_policy.md:360-362"
+    ]
+  },
+  {
+    "id": "od_005",
+    "category": "renewal",
+    "question": "同一計劃或較低保障額的續保，OneDegree 會重新計算等候期嗎？",
+    "expected_provider": "one_degree",
+    "gold_facts": [
+      "不會。",
+      "同一計劃或較低保障額計劃續保時，不設等候期。",
+      "回答不能把所有續保都說成有等待期。"
+    ],
+    "source_refs": [
+      "assets/rag/hk_insurance/one_degree/one_degree_policy.md:364-366"
+    ]
+  },
+  {
+    "id": "od_006",
+    "category": "upgrade",
+    "question": "如果續保時升級到更高 annual limit，新增保障部分會立即生效嗎？",
+    "expected_provider": "one_degree",
+    "gold_facts": [
+      "不會立即完全生效。",
+      "升級到更高 annual limit 時，增加的保障部分要受等待期限制。",
+      "慢性病的新增保障還要符合升級前未出現症狀、確診、用藥、醫療建議或治療等條件。"
+    ],
+    "source_refs": [
+      "assets/rag/hk_insurance/one_degree/one_degree_policy.md:368-370",
+      "assets/rag/hk_insurance/one_degree/one_degree_policy.md:623-625"
+    ]
+  },
+  {
+    "id": "od_007",
+    "category": "chronic",
+    "question": "OneDegree 會保障慢性病嗎？",
+    "expected_provider": "one_degree",
+    "gold_facts": [
+      "會，但條件非常嚴格，不是無條件全面保障。",
+      "慢性病保障需要同時滿足年齡要求與乾淨病史（在適用等候期前未有症狀、確診、用藥、醫療建議或治療）。",
+      "回答若只說『有保』而不提條件，屬於不完整。"
+    ],
+    "source_refs": [
+      "assets/rag/hk_insurance/one_degree/one_degree_policy.md:70-82"
+    ]
+  },
+  {
+    "id": "od_008",
+    "category": "chronic",
+    "question": "OneDegree 的慢性病保障需要滿足哪些條件？",
+    "expected_provider": "one_degree",
+    "gold_facts": [
+      "需要同時滿足兩個條件。",
+      "第一，寵物在首個保單生效日或升級到更高 annual limit 的續保日兩者較後者時，年齡須為 4 歲或以下。",
+      "第二，在首個保單年度與升級保障適用的等待期完結前，未曾因該等慢性病出現症狀、確診、用藥、醫療建議或治療。"
+    ],
+    "source_refs": [
+      "assets/rag/hk_insurance/one_degree/one_degree_policy.md:70-82"
+    ]
+  },
+  {
+    "id": "od_009",
+    "category": "chronic",
+    "question": "對 5 歲或以上寵物，OneDegree 的慢性病保障有什麼特別規則？",
+    "expected_provider": "one_degree",
+    "gold_facts": [
+      "5 歲或以上寵物適用特別規則。",
+      "只會在首次出現該慢性病相關症狀、確診、用藥、醫療建議或治療的該保單年度提供保障。",
+      "相關慢性病在之後續保保單中會被排除。",
+      "等待期前已出現相關情況的慢性病仍然不保。"
+    ],
+    "source_refs": [
+      "assets/rag/hk_insurance/one_degree/one_degree_policy.md:85-103"
+    ]
+  },
+  {
+    "id": "od_010",
+    "category": "cancer_cash",
+    "question": "OneDegree 有癌症現金保障嗎？是一次性還是可以重複索償？",
+    "expected_provider": "one_degree",
+    "gold_facts": [
+      "有，但需符合條件。",
+      "癌症現金保障是 one-off / 一次性的。",
+      "一生只能索取一次，之後不會就其後癌症再次提供癌症現金保障。"
+    ],
+    "source_refs": [
+      "assets/rag/hk_insurance/one_degree/one_degree_policy.md:181-210"
+    ]
+  },
+  {
+    "id": "od_011",
+    "category": "cancer_cash",
+    "question": "OneDegree 的癌症現金保障會扣減年度保障總額，或者受 reimbursement ratio 影響嗎？",
+    "expected_provider": "one_degree",
+    "gold_facts": [
+      "不會。",
+      "癌症現金保障是獨立的一次性現金給付。",
+      "Annual Limit 和 Reimbursement Rate 不適用於該保障。",
+      "該筆賠償不會扣減當期可用的年度保障總額。"
+    ],
+    "source_refs": [
+      "assets/rag/hk_insurance/one_degree/one_degree_policy.md:187-191"
+    ]
+  },
+  {
+    "id": "od_012",
+    "category": "consultation",
+    "question": "OneDegree 會保障普通科獸醫診金、專科獸醫診金和緊急診症費嗎？",
+    "expected_provider": "one_degree",
+    "gold_facts": [
+      "會保障普通科獸醫診金。",
+      "會保障專科獸醫診金。",
+      "會保障緊急診症費用。",
+      "回答不能只提普通科而漏掉專科 / 緊急診症。"
+    ],
+    "source_refs": [
+      "assets/rag/hk_insurance/one_degree/one_degree_policy.md:171-179"
+    ]
+  },
+  {
+    "id": "od_013",
+    "category": "hospitalization",
+    "question": "OneDegree 會保障過夜住院費嗎？如果沒有過午夜 12 點呢？",
+    "expected_provider": "one_degree",
+    "gold_facts": [
+      "會保障過夜住院費。",
+      "條件是留院需要過午夜 12 點。",
+      "若未過午夜 12 點，視為同日住院，住院費不保。"
+    ],
+    "source_refs": [
+      "assets/rag/hk_insurance/one_degree/one_degree_policy_zh.md:139-143"
+    ]
+  },
+  {
+    "id": "od_014",
+    "category": "exclusion",
+    "question": "OneDegree 如何定義投保前已存在病況（pre-existing medical condition）？",
+    "expected_provider": "one_degree",
+    "gold_facts": [
+      "若寵物在等待期完結前，已就相關病況出現症狀、獲診斷、接受藥物、醫療建議或治療，該病況屬投保前已存在病況。",
+      "OneDegree 不保障相關 pre-existing condition 及其引致病況的治療。"
+    ],
+    "source_refs": [
+      "assets/rag/hk_insurance/one_degree/one_degree_policy.md:392-393",
+      "assets/rag/hk_insurance/one_degree/one_degree_policy.md:809-810"
+    ]
+  },
+  {
+    "id": "od_015",
+    "category": "exclusion",
+    "question": "OneDegree 會保障先天性病況嗎？",
+    "expected_provider": "one_degree",
+    "gold_facts": [
+      "不會。",
+      "先天性病況屬 excluded medical conditions。"
+    ],
+    "source_refs": [
+      "assets/rag/hk_insurance/one_degree/one_degree_policy.md:427-430"
+    ]
+  },
+  {
+    "id": "od_016",
+    "category": "exclusion",
+    "question": "OneDegree 會保障牙科疾病嗎？如果是意外造成牙齒受傷呢？",
+    "expected_provider": "one_degree",
+    "gold_facts": [
+      "一般口腔或牙科相關疾病不保。",
+      "但因意外導致而需要的牙科治療屬例外，可以受保。",
+      "回答若直接說『牙科完全不保』屬錯誤。"
+    ],
+    "source_refs": [
+      "assets/rag/hk_insurance/one_degree/one_degree_policy.md:431-433"
+    ]
+  },
+  {
+    "id": "od_017",
+    "category": "exclusion",
+    "question": "OneDegree 會保障疫苗、例行檢查或其他預防性治療嗎？",
+    "expected_provider": "one_degree",
+    "gold_facts": [
+      "不會。",
+      "預防性治療與 routine health care 屬不保項目。",
+      "例子包括疫苗、例行身體檢查、寄生蟲預防、植入晶片、修甲與美容相關處理等。"
+    ],
+    "source_refs": [
+      "assets/rag/hk_insurance/one_degree/one_degree_policy.md:503-510"
+    ]
+  },
+  {
+    "id": "od_018",
+    "category": "renewal",
+    "question": "OneDegree 會自動續保嗎？會提前多久通知？續保時能改條款或保費嗎？",
+    "expected_provider": "one_degree",
+    "gold_facts": [
+      "一般情況下會自動續保。",
+      "會在續保日前 30 天以電郵或短訊通知。",
+      "公司保留在續保時更改保費或保單條款的權利。"
+    ],
+    "source_refs": [
+      "assets/rag/hk_insurance/one_degree/one_degree_policy.md:603-608"
+    ]
+  },
+  {
+    "id": "od_019",
+    "category": "upgrade",
+    "question": "如果寵物在下一次續保時已達 12 歲，還可以升級到更高 annual limit 的計劃嗎？",
+    "expected_provider": "one_degree",
+    "gold_facts": [
+      "不可以。",
+      "若寵物於下一次續保時已達 12 歲，OneDegree 不接受升級到更高 annual limit 的計劃。"
+    ],
+    "source_refs": [
+      "assets/rag/hk_insurance/one_degree/one_degree_policy.md:615-619"
+    ]
+  },
+  {
+    "id": "od_020",
+    "category": "claims",
+    "question": "如果我已經從其他保險公司拿到部分理賠，OneDegree 會怎樣處理？",
+    "expected_provider": "one_degree",
+    "gold_facts": [
+      "若已從其他保險公司獲得賠償，OneDegree 只需承擔其他保險未覆蓋的部分。",
+      "仍受本保單條款及年度保障總額限制。",
+      "回答不能說會重複全額賠。"
+    ],
+    "source_refs": [
+      "assets/rag/hk_insurance/one_degree/one_degree_policy.md:575-577"
+    ]
+  }
+]

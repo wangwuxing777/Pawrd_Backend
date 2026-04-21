@@ -197,6 +197,7 @@ func main() {
 	mux.HandleFunc("/api/chat", handlers.NewRAGHandler(ragClient, sessionStore))
 
 	// New chat session endpoints
+	mux.HandleFunc("/rag-test", handlers.NewRAGTestPageHandler())
 	mux.HandleFunc("/api/chat/session", handlers.NewChatSessionHandler(sessionStore))
 	mux.HandleFunc("/api/chat/session/", handlers.NewChatSelectProviderHandler(sessionStore)) // matches /api/chat/session/{id}/provider
 	mux.HandleFunc("/api/chat/providers", handlers.NewChatProvidersHandler(ragClient))

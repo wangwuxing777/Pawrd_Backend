@@ -156,7 +156,8 @@ func (c *openAICompleter) Complete(ctx context.Context, systemPrompt, userPrompt
 	var decoded struct {
 		Choices []struct {
 			Message struct {
-				Content any `json:"content"`
+				Content          any `json:"content"`
+				ReasoningContent any `json:"reasoning_content"`
 			} `json:"message"`
 		} `json:"choices"`
 	}
@@ -166,7 +167,17 @@ func (c *openAICompleter) Complete(ctx context.Context, systemPrompt, userPrompt
 	if len(decoded.Choices) == 0 {
 		return "", fmt.Errorf("chat completion returned no choices")
 	}
-	return extractMessageContent(decoded.Choices[0].Message.Content), nil
+	return extractPrimaryMessageContent(
+		decoded.Choices[0].Message.Content,
+		decoded.Choices[0].Message.ReasoningContent,
+	), nil
+}
+
+func extractPrimaryMessageContent(content any, reasoning any) string {
+	if text := extractMessageContent(content); strings.TrimSpace(text) != "" {
+		return text
+	}
+	return extractMessageContent(reasoning)
 }
 
 func extractMessageContent(content any) string {

@@ -38,6 +38,12 @@ func (fakeCompleter) Complete(_ context.Context, _, userPrompt string) (string, 
 	return "stub:" + userPrompt, nil
 }
 
+type blankCompleter struct{}
+
+func (blankCompleter) Complete(_ context.Context, _, _ string) (string, error) {
+	return "", nil
+}
+
 func TestLocalRuntimeProviderAndLanguageFiltering(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "bluecross", "blue_cross.md"), "# Terms\nBlue Cross waiting period for injury is 7 days.")
@@ -157,6 +163,90 @@ func TestBuildQuestionBriefChronicCondition(t *testing.T) {
 	got := buildQuestionBrief("Does OneDegree cover chronic medical conditions?", evidenceList)
 	if !strings.Contains(strings.ToLower(got), "chronic") {
 		t.Fatalf("expected chronic-condition brief, got %q", got)
+	}
+}
+
+func TestRetrieveAllProvidersKeepsTopKPerProvider(t *testing.T) {
+	runtime := &localRuntime{
+		cfg: &config.Config{HKInsuranceRAGTopK: 2},
+		chunks: []indexedChunk{
+			{Provider: "bluecross", Language: "zh", Source: "b1.md", Text: "慢性疾病 保障 條件 1"},
+			{Provider: "bluecross", Language: "zh", Source: "b2.md", Text: "慢性疾病 保障 條件 2"},
+			{Provider: "bluecross", Language: "zh", Source: "b3.md", Text: "慢性疾病 保障 條件 3"},
+			{Provider: "one_degree", Language: "zh", Source: "o1.md", Text: "慢性疾病 保障 條件 A"},
+			{Provider: "one_degree", Language: "zh", Source: "o2.md", Text: "慢性疾病 保障 條件 B"},
+			{Provider: "one_degree", Language: "zh", Source: "o3.md", Text: "慢性疾病 保障 條件 C"},
+		},
+	}
+
+	got, err := runtime.retrieve(context.Background(), "慢性疾病保障嗎", "zh", "")
+	if err != nil {
+		t.Fatalf("retrieve error: %v", err)
+	}
+	if len(got) != 4 {
+		t.Fatalf("expected 4 chunks (2 per provider), got %d", len(got))
+	}
+
+	perProvider := map[string]int{}
+	for _, chunk := range got {
+		perProvider[chunk.Provider]++
+	}
+	if perProvider["bluecross"] != 2 || perProvider["one_degree"] != 2 {
+		t.Fatalf("unexpected per-provider counts: %#v", perProvider)
+	}
+}
+
+func TestBuildAnswerContextMultiProviderGroupsByProvider(t *testing.T) {
+	chunks := []indexedChunk{
+		{Provider: "bluecross", Source: "blue_cross_zh.md", Text: "慢性疾病 不保。"},
+		{Provider: "one_degree", Source: "one_degree_policy_zh.md", Text: "慢性疾病 只在首個保單年度保障。"},
+	}
+
+	context := buildAnswerContext("保險涵蓋慢性疾病治療嗎", chunks)
+	if !strings.Contains(context, "Provider: Blue Cross 藍十字") {
+		t.Fatalf("expected bluecross provider section, got %q", context)
+	}
+	if !strings.Contains(context, "Provider: OneDegree") {
+		t.Fatalf("expected one_degree provider section, got %q", context)
+	}
+}
+
+func TestFallbackAnswerMultiProviderDoesNotUseSingleProductVoice(t *testing.T) {
+	chunks := []indexedChunk{
+		{Provider: "bluecross", Source: "blue_cross_zh.md", Text: "慢性疾病 不保。"},
+		{Provider: "one_degree", Source: "one_degree_policy_zh.md", Text: "慢性疾病 只在首個保單年度保障。"},
+	}
+
+	got := fallbackAnswer("保險涵蓋慢性疾病治療嗎", chunks, true)
+	if !strings.Contains(got, "Blue Cross 藍十字") || !strings.Contains(got, "OneDegree") {
+		t.Fatalf("expected grouped providers in fallback answer, got %q", got)
+	}
+	if strings.Contains(got, "本產品") || strings.Contains(got, "本計劃") {
+		t.Fatalf("fallback answer should not use single-product voice, got %q", got)
+	}
+}
+
+func TestAskWithContextFallsBackWhenCompletionIsBlank(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "bluecross", "blue_cross_zh.md"), "# 條款\n慢性疾病 不保。")
+	mustWrite(t, filepath.Join(root, "one_degree", "one_degree_policy_zh.md"), "# 條款\n慢性疾病 只在首個保單年度保障。")
+
+	runtime := newLocalRuntime(&config.Config{
+		HKInsuranceRAGDataPath: root,
+		HKInsuranceRAGTopK:     2,
+	}, nil, fakeEmbedder{}, blankCompleter{})
+
+	resp, err := runtime.AskWithContext(context.Background(), ChatRequest{
+		Query: "慢性病包含嗎",
+	})
+	if err != nil {
+		t.Fatalf("AskWithContext error: %v", err)
+	}
+	if strings.TrimSpace(resp.Answer) == "" {
+		t.Fatal("expected non-empty fallback answer when completer returns blank")
+	}
+	if !strings.Contains(resp.Answer, "Blue Cross 藍十字") || !strings.Contains(resp.Answer, "OneDegree") {
+		t.Fatalf("expected grouped provider fallback answer, got %q", resp.Answer)
 	}
 }
 

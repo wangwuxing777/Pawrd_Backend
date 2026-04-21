@@ -8,7 +8,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -73,6 +75,15 @@ func newLocalRuntime(cfg *config.Config, db *gorm.DB, embedder embedder, complet
 }
 
 func (r *localRuntime) AskWithContext(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
+	if isGreetingOrSmallTalk(req.Query) {
+		return &ChatResponse{
+			Answer:         buildSmallTalkResponse(req.Query),
+			Sources:        []string{},
+			ActiveProvider: "",
+			SessionID:      req.SessionID,
+		}, nil
+	}
+
 	if err := r.ensureIndex(ctx); err != nil {
 		return nil, err
 	}
@@ -108,9 +119,13 @@ func (r *localRuntime) AskWithContext(ctx context.Context, req ChatRequest) (*Ch
 	if err != nil {
 		return nil, err
 	}
+	answer = CleanModelOutput(answer)
+	if answer == "" {
+		answer = fallbackAnswer(req.Query, chunks, activeProviderName == "All Providers")
+	}
 
 	return &ChatResponse{
-		Answer:         CleanModelOutput(answer),
+		Answer:         answer,
 		Sources:        sources,
 		ActiveProvider: effectiveProvider,
 		SessionID:      req.SessionID,
@@ -438,16 +453,13 @@ func (r *localRuntime) retrieve(ctx context.Context, query, language, provider s
 		return scoredChunks[i].score > scoredChunks[j].score
 	})
 
-	questionType := describeQuestionType(query)
-	if questionType == "comparison" && provider == "" {
-		scoredChunks = diversifyScoredChunks(scoredChunks, 2)
-	}
-
 	topK := r.cfg.HKInsuranceRAGTopK
 	if topK <= 0 {
 		topK = 6
 	}
-	if len(scoredChunks) > topK {
+	if provider == "" {
+		scoredChunks = selectTopKPerProvider(scoredChunks, topK)
+	} else if len(scoredChunks) > topK {
 		scoredChunks = scoredChunks[:topK]
 	}
 
@@ -458,7 +470,7 @@ func (r *localRuntime) retrieve(ctx context.Context, query, language, provider s
 	return result, nil
 }
 
-func diversifyScoredChunks(items []scoredChunk, perProviderLimit int) []scoredChunk {
+func selectTopKPerProvider(items []scoredChunk, perProviderLimit int) []scoredChunk {
 	if len(items) == 0 {
 		return items
 	}
@@ -479,7 +491,7 @@ func diversifyScoredChunks(items []scoredChunk, perProviderLimit int) []scoredCh
 
 func (r *localRuntime) complete(ctx context.Context, contextStr, question, historyStr, activeProviderName string, chunks []indexedChunk) (string, error) {
 	if r.completer == nil {
-		return fallbackAnswer(question, chunks), nil
+		return fallbackAnswer(question, chunks, activeProviderName == "All Providers"), nil
 	}
 
 	systemPrompt := `You are the "Petwell AI Specialist," a professional expert on the Hong Kong pet insurance market. You provide answers based only on the retrieved policy evidence. Follow these rules:
@@ -490,6 +502,8 @@ func (r *localRuntime) complete(ctx context.Context, contextStr, question, histo
 - If the user asks a yes/no question, begin with "Yes", "No", or "Partly" when the evidence supports that.
 - If the user asks about waiting periods, coverage limits, ages, reimbursement rates, or chronic-condition eligibility, surface the exact figure/rule in the first sentence.
 - If multiple providers are relevant, compare them in bullets and name the provider for each point.
+- If Provider context is "All Providers", organize the answer by provider and name the provider in every section.
+- If Provider context is "All Providers", never write as if all evidence belongs to a single product or plan. Do not use phrases like "this product", "this plan", "本產品", or "本計劃".
 - If the evidence is incomplete, say so briefly instead of guessing.
 - Use bold text for dollar amounts and timeframes when relevant.
 - Use bullet points when listing rules, limits, or comparisons.
@@ -509,7 +523,7 @@ User Question:
 
 	answer, err := r.completer.Complete(ctx, systemPrompt, userPrompt)
 	if err != nil {
-		return fallbackAnswer(question, chunks), nil
+		return fallbackAnswer(question, chunks, activeProviderName == "All Providers"), nil
 	}
 	return answer, nil
 }
@@ -524,6 +538,12 @@ func formatIndexedChunks(chunks []indexedChunk) string {
 }
 
 func buildAnswerContext(question string, chunks []indexedChunk) string {
+	if len(chunks) == 0 {
+		return ""
+	}
+	if hasMultipleProviders(chunks) {
+		return buildMultiProviderAnswerContext(question, chunks)
+	}
 	evidenceList := buildEvidenceList(question, chunks, 10)
 	brief := buildQuestionBrief(question, evidenceList)
 	lines := make([]string, 0, len(evidenceList))
@@ -535,6 +555,36 @@ func buildAnswerContext(question string, chunks []indexedChunk) string {
 	}
 	for _, item := range evidenceList {
 		lines = append(lines, fmt.Sprintf("- [%s] %s", item.source, item.text))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func buildMultiProviderAnswerContext(question string, chunks []indexedChunk) string {
+	language := DetectQueryLanguage(question)
+	lines := make([]string, 0, len(chunks)+8)
+	if language == "zh" {
+		lines = append(lines, "Structured answer brief:")
+		lines = append(lines, "以下證據來自多間保險公司，請按保險公司分開理解與回答。")
+	} else {
+		lines = append(lines, "Structured answer brief:")
+		lines = append(lines, "The evidence below comes from multiple providers. Summarize it provider by provider.")
+	}
+
+	for _, provider := range orderedProviders(chunks) {
+		providerChunks := filterChunksByProvider(chunks, provider)
+		if len(providerChunks) == 0 {
+			continue
+		}
+		brief := buildQuestionBrief(question, buildEvidenceList(question, providerChunks, 6))
+		lines = append(lines, "")
+		lines = append(lines, "Provider: "+providercatalog.DisplayName(provider))
+		if brief != "" {
+			lines = append(lines, brief)
+		}
+		lines = append(lines, "Supporting evidence:")
+		for _, item := range buildEvidenceList(question, providerChunks, 6) {
+			lines = append(lines, fmt.Sprintf("- [%s] %s", item.source, item.text))
+		}
 	}
 	return strings.Join(lines, "\n")
 }
@@ -589,15 +639,22 @@ func buildEvidenceList(question string, chunks []indexedChunk, limit int) []evid
 func describeQuestionType(question string) string {
 	lower := strings.ToLower(question)
 	switch {
+	case isGreetingOrSmallTalk(question):
+		return "greeting"
 	case containsAny(lower, "compare", "which providers", "difference", "differences", "比較", "比较", "邊間", "边间", "邊個", "边个"):
 		return "comparison"
+	case containsAny(lower, "recommend", "recommendation", "推薦", "推荐", "推介") && containsAny(lower, "insurance", "保險", "保险"):
+		return "recommendation"
+	case containsAny(lower, "meaning of", "what is the meaning", "what does", "define", "意思", "是什麼", "是什么") &&
+		containsAny(lower, "waiting", "wait", "等候期"):
+		return "definition"
 	case containsAny(lower, "waiting", "wait", "等候期"):
 		return "waiting-period"
 	case containsAny(lower, "chronic", "chronic condition", "chronic medical", "慢性"):
 		return "chronic-condition"
 	case containsAny(lower, "cover", "covered", "coverage", "保障", "包唔包", "包不包"):
 		return "coverage"
-	case containsAny(lower, "age", "years old", "年齡", "年龄", "歲", "岁"):
+	case containsAny(lower, "age", "years old", "年齡", "年龄", "歲", "岁", "幾歲", "几岁", "年紀", "年纪"):
 		return "age-eligibility"
 	default:
 		return "general"
@@ -633,9 +690,12 @@ func noDataMessage(language, provider string) string {
 	return "I cannot find policy content in the same language yet. Please ingest markdown documents for this language first."
 }
 
-func fallbackAnswer(question string, chunks []indexedChunk) string {
+func fallbackAnswer(question string, chunks []indexedChunk, multiProvider bool) string {
 	if len(chunks) == 0 {
 		return "I could not find relevant policy content."
+	}
+	if multiProvider || hasMultipleProviders(chunks) {
+		return buildMultiProviderFallback(question, chunks)
 	}
 	candidates := buildEvidenceList(question, chunks, 6)
 	if brief := buildQuestionBrief(question, candidates); brief != "" {
@@ -661,6 +721,35 @@ func fallbackAnswer(question string, chunks []indexedChunk) string {
 			break
 		}
 		lines = append(lines, "- "+item.text)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func buildMultiProviderFallback(question string, chunks []indexedChunk) string {
+	language := DetectQueryLanguage(question)
+	lines := make([]string, 0, len(chunks)+4)
+	if language == "zh" {
+		lines = append(lines, "以下為按保險公司分開整理的檢索結果：")
+	} else {
+		lines = append(lines, "Below is the retrieved evidence grouped by provider:")
+	}
+	for _, provider := range orderedProviders(chunks) {
+		providerChunks := filterChunksByProvider(chunks, provider)
+		if len(providerChunks) == 0 {
+			continue
+		}
+		brief := buildQuestionBrief(question, buildEvidenceList(question, providerChunks, 6))
+		if brief == "" {
+			continue
+		}
+		if language == "zh" {
+			lines = append(lines, "")
+			lines = append(lines, providercatalog.DisplayName(provider)+"：")
+		} else {
+			lines = append(lines, "")
+			lines = append(lines, providercatalog.DisplayName(provider)+":")
+		}
+		lines = append(lines, brief)
 	}
 	return strings.Join(lines, "\n")
 }
@@ -711,6 +800,17 @@ func questionTypeBoost(questionType, question, line, provider string) float64 {
 		}
 		if containsAny(strings.ToLower(question), "cover", "coverage", "保障", "包唔包", "包不包") && containsAny(lowerLine, "we will cover", "covered", "保障", "賠償", "赔偿") {
 			boost += 0.6
+		}
+	case "age-eligibility", "recommendation":
+		if containsAny(lowerLine, "6 months", "9 years", "8歲", "8岁", "6個月", "6个月", "4 years old", "5 years old", "below 6 years", "年齡", "年龄", "歲", "岁") {
+			boost += 1.1
+		}
+		if containsAny(lowerLine, "must be", "at least", "less than", "or below", "投保申請時", "application", "申請時", "only if") {
+			boost += 0.5
+		}
+	case "definition":
+		if containsAny(lowerLine, "waiting period", "等候期", "specific number of days", "在保單生效日期", "policy commencement date", "保障將於相關等候期屆滿後") {
+			boost += 1.0
 		}
 	}
 	if provider != "" && containsAny(strings.ToLower(question), provider, providercatalog.DisplayName(provider)) {
@@ -764,9 +864,58 @@ func buildQuestionBrief(question string, evidenceList []evidence) string {
 		return buildChronicBrief(question, evidenceList)
 	case "comparison":
 		return buildComparisonBrief(question, evidenceList)
+	case "age-eligibility":
+		return buildAgeEligibilityBrief(question, evidenceList)
+	case "recommendation":
+		return buildRecommendationBrief(question, evidenceList)
+	case "definition":
+		return buildDefinitionBrief(question, evidenceList)
 	default:
 		return ""
 	}
+}
+
+func hasMultipleProviders(chunks []indexedChunk) bool {
+	seen := map[string]struct{}{}
+	for _, chunk := range chunks {
+		if chunk.Provider == "" {
+			continue
+		}
+		seen[chunk.Provider] = struct{}{}
+		if len(seen) > 1 {
+			return true
+		}
+	}
+	return false
+}
+
+func orderedProviders(chunks []indexedChunk) []string {
+	seen := map[string]struct{}{}
+	providers := make([]string, 0, len(chunks))
+	for _, chunk := range chunks {
+		if chunk.Provider == "" {
+			continue
+		}
+		if _, ok := seen[chunk.Provider]; ok {
+			continue
+		}
+		seen[chunk.Provider] = struct{}{}
+		providers = append(providers, chunk.Provider)
+	}
+	sort.SliceStable(providers, func(i, j int) bool {
+		return providercatalog.DisplayName(providers[i]) < providercatalog.DisplayName(providers[j])
+	})
+	return providers
+}
+
+func filterChunksByProvider(chunks []indexedChunk, provider string) []indexedChunk {
+	filtered := make([]indexedChunk, 0, len(chunks))
+	for _, chunk := range chunks {
+		if chunk.Provider == provider {
+			filtered = append(filtered, chunk)
+		}
+	}
+	return filtered
 }
 
 func buildWaitingBrief(question string, evidenceList []evidence) string {
@@ -927,6 +1076,90 @@ func buildComparisonBrief(question string, evidenceList []evidence) string {
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+var agePattern = regexp.MustCompile(`(\d+)\s*(years? old|yrs?|歲|岁)`)
+
+func buildAgeEligibilityBrief(question string, evidenceList []evidence) string {
+	language := DetectQueryLanguage(question)
+	ageYears, hasAge := extractAgeYears(question)
+	best := firstMatchingEvidence(evidenceList, func(item evidence) bool {
+		lower := strings.ToLower(item.text)
+		return containsAny(lower, "6 months", "9 years", "8歲", "8岁", "6個月", "6个月", "4 years old", "5 years old", "below 6 years", "年齡", "年龄")
+	})
+	if best == nil {
+		return ""
+	}
+	if hasAge && language == "zh" {
+		if ageYears >= 9 {
+			return fmt.Sprintf("如果你的寵物已經 **%d 歲**，按目前檢索到的藍十字條文，通常**不符合新投保年齡**。相關條文指出受保寵物於投保申請時的年齡必須介乎 **6 個月至 8 歲**。", ageYears)
+		}
+	}
+	if hasAge && language != "zh" {
+		if ageYears >= 9 {
+			return fmt.Sprintf("If your pet is already **%d years old**, the retrieved Blue Cross clause suggests it is **not eligible for a new application**, because the application age must be between **6 months and 8 years**.", ageYears)
+		}
+	}
+	if language == "zh" {
+		return "根據檢索到的投保年齡條文：\n• " + best.text
+	}
+	return "Based on the retrieved age-eligibility clause:\n- " + best.text
+}
+
+func buildRecommendationBrief(question string, evidenceList []evidence) string {
+	language := DetectQueryLanguage(question)
+	if brief := buildAgeEligibilityBrief(question, evidenceList); brief != "" {
+		if language == "zh" && strings.Contains(brief, "不符合新投保年齡") {
+			return brief + "\n\n建議：可改問我其他保險公司的高齡寵物投保限制，或先比較是否只有續保而非新投保方案。"
+		}
+		if language != "zh" && strings.Contains(strings.ToLower(brief), "not eligible for a new application") {
+			return brief + "\n\nSuggestion: ask me to compare other providers' senior-pet age limits, or check whether renewal is possible instead of a new application."
+		}
+	}
+	return buildCoverageBrief(question, evidenceList)
+}
+
+func buildDefinitionBrief(question string, evidenceList []evidence) string {
+	language := DetectQueryLanguage(question)
+	if language == "zh" {
+		return "「等候期」是指保單生效後的一段指定時間，在這段時間內，某些疾病或受傷相關索償**尚未開始受保障**。不同保險公司、不同病況的等候期長短可以不同，例如受傷可能是 **7 天**，而癌症可能更長。"
+	}
+	return "A **waiting period** is the fixed period after a policy starts during which certain claims are **not yet covered**. The exact duration depends on the provider and the type of condition—for example, injury may have a short waiting period, while cancer may have a longer one."
+}
+
+func extractAgeYears(question string) (int, bool) {
+	matches := agePattern.FindStringSubmatch(question)
+	if len(matches) < 2 {
+		return 0, false
+	}
+	years, err := strconv.Atoi(matches[1])
+	if err != nil {
+		return 0, false
+	}
+	return years, true
+}
+
+func isGreetingOrSmallTalk(question string) bool {
+	trimmed := strings.TrimSpace(strings.ToLower(question))
+	if trimmed == "" {
+		return true
+	}
+	shortGreetings := []string{
+		"hi", "hello", "hey", "yo", "你好", "您好", "哈囉", "哈喽", "在嗎", "在吗", "嗨", "hi!", "hello!",
+	}
+	for _, greeting := range shortGreetings {
+		if trimmed == greeting {
+			return true
+		}
+	}
+	return false
+}
+
+func buildSmallTalkResponse(question string) string {
+	if DetectQueryLanguage(question) == "zh" {
+		return "你好！我是 Pawrd Assistant。你可以直接問我保險條款、等候期、投保年齡限制，或者讓我幫你比較不同保險公司的保障。"
+	}
+	return "Hi! I'm Pawrd Assistant. You can ask me about insurance terms, waiting periods, age limits, or ask me to compare different pet insurance providers."
 }
 
 func firstMatchingEvidence(items []evidence, predicate func(evidence) bool) *evidence {
