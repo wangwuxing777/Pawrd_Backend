@@ -75,7 +75,8 @@ func newLocalRuntime(cfg *config.Config, db *gorm.DB, embedder embedder, complet
 }
 
 func (r *localRuntime) AskWithContext(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
-	if isGreetingOrSmallTalk(req.Query) {
+	review := reviewQuery(req.Query, req.Provider)
+	if review.Route == "fallback" && review.FallbackType == "greeting" {
 		return &ChatResponse{
 			Answer:         buildSmallTalkResponse(req.Query),
 			Sources:        []string{},
@@ -89,12 +90,12 @@ func (r *localRuntime) AskWithContext(ctx context.Context, req ChatRequest) (*Ch
 	}
 
 	queryLanguage := DetectQueryLanguage(req.Query)
-	effectiveProvider := providercatalog.NormalizeProviderID(req.Provider)
-	if effectiveProvider == "" {
+	effectiveProvider := review.ProviderScope
+	if effectiveProvider == "" && review.QueryType != "comparison" {
 		effectiveProvider = providercatalog.DetectProvider(req.Query)
 	}
 
-	chunks, err := r.retrieve(ctx, req.Query, queryLanguage, effectiveProvider)
+	chunks, err := r.retrieve(ctx, req.Query, queryLanguage, effectiveProvider, review.MentionedProviders)
 	if err != nil {
 		return nil, err
 	}
@@ -115,14 +116,16 @@ func (r *localRuntime) AskWithContext(ctx context.Context, req ChatRequest) (*Ch
 		activeProviderName = providercatalog.DisplayName(effectiveProvider)
 	}
 
-	answer, err := r.complete(ctx, contextStr, req.Query, historyStr, activeProviderName, chunks)
-	if err != nil {
-		return nil, err
+	var answer string
+	if review.DirectAnswerMode == "deterministic_comparison" {
+		answer = buildDeterministicComparisonAnswer(req.Query, chunks)
+	} else {
+		answer, err = r.complete(ctx, contextStr, req.Query, historyStr, activeProviderName, chunks)
+		if err != nil {
+			return nil, err
+		}
 	}
-	answer = CleanModelOutput(answer)
-	if answer == "" {
-		answer = fallbackAnswer(req.Query, chunks, activeProviderName == "All Providers")
-	}
+	answer = reviewAnswer(review, req.Query, answer, chunks, activeProviderName)
 
 	return &ChatResponse{
 		Answer:         answer,
@@ -409,7 +412,16 @@ func (r *localRuntime) loadDocument(path, dataRoot string) ([]indexedChunk, erro
 	return chunks, nil
 }
 
-func (r *localRuntime) retrieve(ctx context.Context, query, language, provider string) ([]indexedChunk, error) {
+func (r *localRuntime) retrieve(ctx context.Context, query, language, provider string, allowedProviders []string) ([]indexedChunk, error) {
+	plan := buildRetrievalPlan(query)
+	normalizedQuery := plan.Normalized
+	allowed := map[string]struct{}{}
+	for _, item := range allowedProviders {
+		if item = providercatalog.NormalizeProviderID(item); item != "" {
+			allowed[item] = struct{}{}
+		}
+	}
+
 	r.mu.RLock()
 	chunks := make([]indexedChunk, 0, len(r.chunks))
 	for _, chunk := range r.chunks {
@@ -418,6 +430,11 @@ func (r *localRuntime) retrieve(ctx context.Context, query, language, provider s
 		}
 		if provider != "" && chunk.Provider != provider {
 			continue
+		}
+		if provider == "" && len(allowed) > 0 {
+			if _, ok := allowed[chunk.Provider]; !ok {
+				continue
+			}
 		}
 		chunks = append(chunks, chunk)
 	}
@@ -429,7 +446,7 @@ func (r *localRuntime) retrieve(ctx context.Context, query, language, provider s
 
 	var queryEmbedding []float64
 	if r.embedder != nil {
-		embeddings, err := r.embedder.EmbedTexts(ctx, []string{query})
+		embeddings, err := r.embedder.EmbedTexts(ctx, []string{normalizedQuery})
 		if err != nil {
 			return nil, err
 		}
@@ -440,11 +457,11 @@ func (r *localRuntime) retrieve(ctx context.Context, query, language, provider s
 
 	scoredChunks := make([]scoredChunk, 0, len(chunks))
 	for _, chunk := range chunks {
-		lexical := lexicalScore(query, chunk.Text)
-		score := lexical
+		lexical := lexicalScore(normalizedQuery, chunk.Text)
+		score := lexical + retrievalAdjustment(plan, chunk.Text)
 		if len(queryEmbedding) > 0 && len(chunk.Embedding) == len(queryEmbedding) {
 			semantic := cosineSimilarity(queryEmbedding, chunk.Embedding)
-			score = semantic*0.75 + lexical*0.25
+			score = semantic*0.75 + lexical*0.25 + retrievalAdjustment(plan, chunk.Text)
 		}
 		scoredChunks = append(scoredChunks, scoredChunk{chunk: chunk, score: score})
 	}
@@ -637,7 +654,7 @@ func buildEvidenceList(question string, chunks []indexedChunk, limit int) []evid
 }
 
 func describeQuestionType(question string) string {
-	lower := strings.ToLower(question)
+	lower := strings.ToLower(NormalizeQueryText(question))
 	switch {
 	case isGreetingOrSmallTalk(question):
 		return "greeting"
@@ -694,8 +711,8 @@ func fallbackAnswer(question string, chunks []indexedChunk, multiProvider bool) 
 	if len(chunks) == 0 {
 		return "I could not find relevant policy content."
 	}
-	if multiProvider || hasMultipleProviders(chunks) {
-		return buildMultiProviderFallback(question, chunks)
+	if shouldBlockContentFallback(question, chunks, multiProvider) {
+		return strictFallbackMessage(question)
 	}
 	candidates := buildEvidenceList(question, chunks, 6)
 	if brief := buildQuestionBrief(question, candidates); brief != "" {
@@ -725,33 +742,18 @@ func fallbackAnswer(question string, chunks []indexedChunk, multiProvider bool) 
 	return strings.Join(lines, "\n")
 }
 
-func buildMultiProviderFallback(question string, chunks []indexedChunk) string {
-	language := DetectQueryLanguage(question)
-	lines := make([]string, 0, len(chunks)+4)
-	if language == "zh" {
-		lines = append(lines, "以下為按保險公司分開整理的檢索結果：")
-	} else {
-		lines = append(lines, "Below is the retrieved evidence grouped by provider:")
+func shouldBlockContentFallback(question string, chunks []indexedChunk, multiProvider bool) bool {
+	if describeQuestionType(question) == "comparison" {
+		return true
 	}
-	for _, provider := range orderedProviders(chunks) {
-		providerChunks := filterChunksByProvider(chunks, provider)
-		if len(providerChunks) == 0 {
-			continue
-		}
-		brief := buildQuestionBrief(question, buildEvidenceList(question, providerChunks, 6))
-		if brief == "" {
-			continue
-		}
-		if language == "zh" {
-			lines = append(lines, "")
-			lines = append(lines, providercatalog.DisplayName(provider)+"：")
-		} else {
-			lines = append(lines, "")
-			lines = append(lines, providercatalog.DisplayName(provider)+":")
-		}
-		lines = append(lines, brief)
+	return multiProvider || hasMultipleProviders(chunks)
+}
+
+func strictFallbackMessage(question string) string {
+	if DetectQueryLanguage(question) == "zh" {
+		return "我暫時無法可靠完成這類多間保險公司的比較回答，因此這次不使用比較型 fallback。請稍後重試，或先改問單一保險公司。"
 	}
-	return strings.Join(lines, "\n")
+	return "I can't reliably produce this multi-provider comparison answer right now, so comparison fallback is disabled for this run. Please retry later or ask about a single provider first."
 }
 
 func questionTypeBoost(questionType, question, line, provider string) float64 {
@@ -920,10 +922,13 @@ func filterChunksByProvider(chunks []indexedChunk, provider string) []indexedChu
 
 func buildWaitingBrief(question string, evidenceList []evidence) string {
 	language := DetectQueryLanguage(question)
-	injuryFocused := containsAny(strings.ToLower(question), "injury", "injuries", "bodily injury", "受傷", "受伤")
+	normalizedQuestion := strings.ToLower(NormalizeQueryText(question))
+	injuryFocused := containsAny(normalizedQuestion, "injury", "injuries", "bodily injury", "受傷", "受伤")
+	cancerFocused := containsAny(normalizedQuestion, "cancer", "癌症", "惡性腫瘤", "恶性肿瘤")
 
 	lines := make([]string, 0, 4)
 	seen := map[string]struct{}{}
+	primary := ""
 	for _, item := range evidenceList {
 		lower := strings.ToLower(item.text)
 		if !containsAny(lower, "waiting period", "waiting periods", "等候期") {
@@ -932,11 +937,17 @@ func buildWaitingBrief(question string, evidenceList []evidence) string {
 		if injuryFocused && !containsAny(lower, "injury", "injuries", "bodily injury", "accident", "受傷", "受伤", "身體損傷", "身体损伤") {
 			continue
 		}
+		if cancerFocused && !containsAny(lower, "cancer", "癌症", "惡性腫瘤", "恶性肿瘤") {
+			continue
+		}
 		key := item.text
 		if _, ok := seen[key]; ok {
 			continue
 		}
 		seen[key] = struct{}{}
+		if primary == "" {
+			primary = item.text
+		}
 		if language == "zh" {
 			lines = append(lines, "• "+item.text)
 		} else {
@@ -950,18 +961,59 @@ func buildWaitingBrief(question string, evidenceList []evidence) string {
 		return ""
 	}
 	if language == "zh" {
+		intro := ""
+		if injuryFocused {
+			intro = "根據檢索到的保單重點，相關**受傷等候期**如下："
+			if primary != "" {
+				intro = "根據檢索到的保單重點，**受傷等候期**重點如下："
+			}
+		} else if cancerFocused {
+			intro = "根據檢索到的保單重點，相關**癌症等候期**如下："
+			if primary != "" {
+				intro = "根據檢索到的保單重點，**癌症等候期**重點如下："
+			}
+		} else {
+			intro = "根據檢索到的保單重點，相關等候期如下："
+		}
+		if lead := buildWaitingLeadSentence(question, primary, injuryFocused, cancerFocused); lead != "" {
+			return lead + "\n\n" + intro + "\n" + strings.Join(lines, "\n")
+		}
+		if primary != "" {
+			return intro + "\n" + strings.Join(lines, "\n")
+		}
 		return "根據檢索到的保單重點：\n" + strings.Join(lines, "\n")
 	}
 	return "Based on the retrieved policy highlights:\n" + strings.Join(lines, "\n")
 }
 
+func buildWaitingLeadSentence(question, primary string, injuryFocused, cancerFocused bool) string {
+	if primary == "" {
+		return ""
+	}
+	lower := strings.ToLower(primary)
+	switch {
+	case injuryFocused && containsAny(lower, "7", "7天", "7 日", "7日"):
+		return "直接回答：相關**受傷等候期為 7 天**。"
+	case injuryFocused && containsAny(lower, "28", "28天", "28 日", "28日"):
+		return "直接回答：相關**受傷等候期為 28 天**。"
+	case cancerFocused && containsAny(lower, "180", "180天", "180 日", "180日"):
+		return "直接回答：相關**癌症等候期為 180 天**。"
+	}
+	return ""
+}
+
 func buildCoverageBrief(question string, evidenceList []evidence) string {
 	language := DetectQueryLanguage(question)
-	queryLower := strings.ToLower(question)
+	queryLower := strings.ToLower(NormalizeQueryText(question))
 	positive := firstMatchingEvidence(evidenceList, func(item evidence) bool {
 		lower := strings.ToLower(item.text)
 		if !containsAny(lower, "we will cover", "covered", "保障", "賠償", "赔偿", "coverage scope") {
 			return false
+		}
+		if containsAny(queryLower, "cancer", "癌症") {
+			if !containsAny(lower, "cancer", "癌症", "惡性腫瘤", "恶性肿瘤", "現金保障", "现金保障") {
+				return false
+			}
 		}
 		if containsAny(queryLower, "consult", "consultation", "vet", "veterinary", "診症", "诊症", "獸醫", "兽医") {
 			return containsAny(lower, "consult", "consultation", "vet", "veterinary", "診症", "诊症", "獸醫", "兽医")
@@ -1145,12 +1197,15 @@ func isGreetingOrSmallTalk(question string) bool {
 		return true
 	}
 	shortGreetings := []string{
-		"hi", "hello", "hey", "yo", "你好", "您好", "哈囉", "哈喽", "在嗎", "在吗", "嗨", "hi!", "hello!",
+		"hi", "hello", "hey", "yo", "你好", "你好呀", "你好啊", "您好", "哈囉", "哈囉呀", "哈喽", "在嗎", "在吗", "嗨", "hi!", "hello!",
 	}
 	for _, greeting := range shortGreetings {
 		if trimmed == greeting {
 			return true
 		}
+	}
+	if containsAny(trimmed, "你好呀", "你好啊", "hello there", "hey there") {
+		return true
 	}
 	return false
 }

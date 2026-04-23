@@ -17,6 +17,13 @@ func TestDetectQueryLanguage(t *testing.T) {
 	}
 }
 
+func TestNormalizeQueryText(t *testing.T) {
+	got := NormalizeQueryText("OneDegree 有癌症現金保障嗎？一生可以 claim 幾次？")
+	if !strings.Contains(got, "索償") {
+		t.Fatalf("expected claim to normalize to 索償, got %q", got)
+	}
+}
+
 func TestCleanModelOutput(t *testing.T) {
 	raw := "<think>internal</think>\nAnswer"
 	if got := CleanModelOutput(raw); got != "Answer" {

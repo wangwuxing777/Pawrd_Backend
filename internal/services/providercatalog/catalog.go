@@ -54,15 +54,29 @@ func KnownProviders() []Provider {
 }
 
 func DetectProvider(query string) string {
+	providers := DetectProviders(query)
+	if len(providers) > 0 {
+		return providers[0]
+	}
+	return ""
+}
+
+func DetectProviders(query string) []string {
 	lower := strings.ToLower(query)
+	out := make([]string, 0, len(knownDefinitions))
+	seen := map[string]struct{}{}
 	for _, provider := range knownDefinitions {
 		for _, alias := range provider.Aliases {
 			if strings.Contains(lower, alias) {
-				return provider.ID
+				if _, ok := seen[provider.ID]; !ok {
+					seen[provider.ID] = struct{}{}
+					out = append(out, provider.ID)
+				}
+				break
 			}
 		}
 	}
-	return ""
+	return out
 }
 
 func NormalizeProviderID(raw string) string {

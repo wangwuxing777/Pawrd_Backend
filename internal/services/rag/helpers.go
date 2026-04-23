@@ -23,6 +23,23 @@ func DetectQueryLanguage(text string) string {
 	return "en"
 }
 
+func NormalizeQueryText(text string) string {
+	replacer := strings.NewReplacer(
+		"claim", "索償",
+		"claims", "索償",
+		"consultation fee", "consultation 獸醫診症 診金",
+		"consult fee", "consultation 獸醫診症 診金",
+		"consultation", "consultation 獸醫診症 診金",
+		"包唔包", "保障",
+		"包不包", "保障",
+		"有冇", "有沒有",
+		"有无", "有沒有",
+		"幾多日", "多少日",
+		"幾耐", "多久",
+	)
+	return strings.TrimSpace(replacer.Replace(text))
+}
+
 func CleanModelOutput(raw string) string {
 	cleaned := thinkBlockPattern.ReplaceAllString(raw, "")
 	if strings.Contains(cleaned, "</think>") {

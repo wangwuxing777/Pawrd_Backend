@@ -142,6 +142,48 @@ func TestBuildAnswerContextRanksRelevantEvidence(t *testing.T) {
 	}
 }
 
+func TestRetrieveCoverageQueryPrefersCoverageChunkOverWaitingChunk(t *testing.T) {
+	runtime := &localRuntime{
+		cfg: &config.Config{HKInsuranceRAGTopK: 1},
+		chunks: []indexedChunk{
+			{Provider: "one_degree", Language: "zh", Source: "policy.md", Text: "癌症 等候期 180 天。"},
+			{Provider: "one_degree", Language: "zh", Source: "policy.md", Text: "癌症現金保障 一生只可索償一次。"},
+		},
+	}
+
+	got, err := runtime.retrieve(context.Background(), "OneDegree 有癌症現金保障嗎？一生可以 claim 幾次？", "zh", "one_degree", nil)
+	if err != nil {
+		t.Fatalf("retrieve error: %v", err)
+	}
+	if len(got) == 0 {
+		t.Fatal("expected retrieval result")
+	}
+	if !strings.Contains(got[0].Text, "索償一次") {
+		t.Fatalf("expected coverage chunk to rank first, got %q", got[0].Text)
+	}
+}
+
+func TestRetrieveWaitingPeriodQueryPrefersMatchingDiseaseSignal(t *testing.T) {
+	runtime := &localRuntime{
+		cfg: &config.Config{HKInsuranceRAGTopK: 1},
+		chunks: []indexedChunk{
+			{Provider: "one_degree", Language: "zh", Source: "policy.md", Text: "受傷 等候期 28 天。"},
+			{Provider: "one_degree", Language: "zh", Source: "policy.md", Text: "癌症 等候期 180 天。"},
+		},
+	}
+
+	got, err := runtime.retrieve(context.Background(), "OneDegree 的癌症等候期係幾多日？", "zh", "one_degree", nil)
+	if err != nil {
+		t.Fatalf("retrieve error: %v", err)
+	}
+	if len(got) == 0 {
+		t.Fatal("expected retrieval result")
+	}
+	if !strings.Contains(got[0].Text, "180") {
+		t.Fatalf("expected cancer waiting chunk to rank first, got %q", got[0].Text)
+	}
+}
+
 func TestBuildQuestionBriefWaitingPeriod(t *testing.T) {
 	evidenceList := []evidence{
 		{source: "bluecross (blue_cross.md)", provider: "bluecross", text: "Waiting Period (Bodily Injury): 7 days", score: 2},
@@ -179,7 +221,7 @@ func TestRetrieveAllProvidersKeepsTopKPerProvider(t *testing.T) {
 		},
 	}
 
-	got, err := runtime.retrieve(context.Background(), "慢性疾病保障嗎", "zh", "")
+	got, err := runtime.retrieve(context.Background(), "慢性疾病保障嗎", "zh", "", nil)
 	if err != nil {
 		t.Fatalf("retrieve error: %v", err)
 	}
@@ -211,18 +253,53 @@ func TestBuildAnswerContextMultiProviderGroupsByProvider(t *testing.T) {
 	}
 }
 
-func TestFallbackAnswerMultiProviderDoesNotUseSingleProductVoice(t *testing.T) {
+func TestRetrieveComparisonRespectsAllowedProviders(t *testing.T) {
+	runtime := &localRuntime{
+		cfg: &config.Config{HKInsuranceRAGTopK: 2},
+		chunks: []indexedChunk{
+			{Provider: "bluecross", Language: "zh", Source: "b1.md", Text: "受傷 等候期 7 天"},
+			{Provider: "one_degree", Language: "zh", Source: "o1.md", Text: "受傷 等候期 28 天"},
+			{Provider: "prudential", Language: "zh", Source: "p1.md", Text: "身體損傷 等候期 7 天"},
+			{Provider: "msig", Language: "zh", Source: "m1.md", Text: "其他 比較 無關內容"},
+		},
+	}
+
+	got, err := runtime.retrieve(context.Background(), "比較 OneDegree、Blue Cross 同 Prudential 嘅受傷等候期。", "zh", "", []string{"bluecross", "one_degree", "prudential"})
+	if err != nil {
+		t.Fatalf("retrieve error: %v", err)
+	}
+	for _, chunk := range got {
+		if chunk.Provider == "msig" {
+			t.Fatalf("expected msig to be excluded from allowed-provider comparison retrieval")
+		}
+	}
+}
+
+func TestDeterministicConsultComparisonSkipsProvidersWithoutConsultEvidence(t *testing.T) {
+	chunks := []indexedChunk{
+		{Provider: "bluecross", Source: "blue_cross_zh.md", Text: "C) 獸醫診症\n於受保期內因疾病或受傷而接受獸醫診症時的所有獸醫費用。"},
+		{Provider: "prudential", Source: "prudential_zh.md", Text: "C. 獸醫診症\n因疾病或身體損傷而接受獸醫診症時的所有獸醫費用。"},
+		{Provider: "msig", Source: "msig_zh.md", Text: "其他醫療服務用品。"},
+	}
+
+	got := buildDeterministicComparisonAnswer("邊間保險公司有保獸醫 consultation fee？請分公司列出。", chunks)
+	if !strings.Contains(got, "Blue Cross") || !strings.Contains(got, "Prudential") {
+		t.Fatalf("expected providers with consult evidence, got %q", got)
+	}
+	if strings.Contains(strings.ToLower(got), "msig") {
+		t.Fatalf("expected provider without consult evidence to be skipped, got %q", got)
+	}
+}
+
+func TestFallbackAnswerBlocksMultiProviderContentFallback(t *testing.T) {
 	chunks := []indexedChunk{
 		{Provider: "bluecross", Source: "blue_cross_zh.md", Text: "慢性疾病 不保。"},
 		{Provider: "one_degree", Source: "one_degree_policy_zh.md", Text: "慢性疾病 只在首個保單年度保障。"},
 	}
 
 	got := fallbackAnswer("保險涵蓋慢性疾病治療嗎", chunks, true)
-	if !strings.Contains(got, "Blue Cross 藍十字") || !strings.Contains(got, "OneDegree") {
-		t.Fatalf("expected grouped providers in fallback answer, got %q", got)
-	}
-	if strings.Contains(got, "本產品") || strings.Contains(got, "本計劃") {
-		t.Fatalf("fallback answer should not use single-product voice, got %q", got)
+	if !strings.Contains(got, "不使用比較型 fallback") {
+		t.Fatalf("expected strict fallback message, got %q", got)
 	}
 }
 
@@ -245,8 +322,8 @@ func TestAskWithContextFallsBackWhenCompletionIsBlank(t *testing.T) {
 	if strings.TrimSpace(resp.Answer) == "" {
 		t.Fatal("expected non-empty fallback answer when completer returns blank")
 	}
-	if !strings.Contains(resp.Answer, "Blue Cross 藍十字") || !strings.Contains(resp.Answer, "OneDegree") {
-		t.Fatalf("expected grouped provider fallback answer, got %q", resp.Answer)
+	if !strings.Contains(resp.Answer, "不使用比較型 fallback") {
+		t.Fatalf("expected strict fallback message, got %q", resp.Answer)
 	}
 }
 

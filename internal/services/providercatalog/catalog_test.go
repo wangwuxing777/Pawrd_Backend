@@ -23,6 +23,13 @@ func TestDetectProvider(t *testing.T) {
 	}
 }
 
+func TestDetectProviders(t *testing.T) {
+	got := DetectProviders("比較 OneDegree、Blue Cross 同 Prudential 嘅受傷等候期")
+	if len(got) != 3 {
+		t.Fatalf("expected 3 providers, got %#v", got)
+	}
+}
+
 func TestNormalizeProviderID(t *testing.T) {
 	tests := map[string]string{
 		"blue cross":    "bluecross",
