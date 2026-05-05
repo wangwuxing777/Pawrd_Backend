@@ -35,6 +35,9 @@ type BlogPost struct {
 	Title        string          `json:"title"`
 	Content      string          `json:"content"`
 	ImageColor   string          `json:"imageColor"`
+	Location     string          `json:"location,omitempty"`
+	Visibility   string          `json:"visibility,omitempty"`
+	AllowComment bool            `json:"allowComment"`
 	Likes        int             `json:"likes"`
 	CollectCount int             `json:"collectCount"`
 	Comments     int             `json:"comments"`

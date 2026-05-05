@@ -53,6 +53,9 @@ func toBlogPost(p models.Post, requesterID string) models.BlogPost {
 		Title:        p.Title,
 		Content:      p.Content,
 		ImageColor:   p.ImageColor,
+		Location:     p.Location,
+		Visibility:   p.Visibility,
+		AllowComment: p.AllowComment,
 		Likes:        len(p.Likes),
 		CollectCount: len(p.Collections),
 		Comments:     len(p.Comments),
@@ -182,11 +185,14 @@ func NewPostsHandler(db *gorm.DB) http.HandlerFunc {
 		case http.MethodPost:
 			// Decode body fields: title, content, imageColor, imageUrls
 			var body struct {
-				Title      string   `json:"title"`
-				Content    string   `json:"content"`
-				ImageColor string   `json:"imageColor"`
-				ImageUrls  []string `json:"imageUrls"`
-				ImageMeta  []struct {
+				Title        string   `json:"title"`
+				Content      string   `json:"content"`
+				ImageColor   string   `json:"imageColor"`
+				Location     string   `json:"location"`
+				Visibility   string   `json:"visibility"`
+				AllowComment *bool    `json:"allowComment"`
+				ImageUrls    []string `json:"imageUrls"`
+				ImageMeta    []struct {
 					URL          string `json:"url"`
 					ThumbnailURL string `json:"thumbnailUrl"`
 					Width        int    `json:"width"`
@@ -220,6 +226,15 @@ func NewPostsHandler(db *gorm.DB) http.HandlerFunc {
 				imageColor = "blue"
 			}
 
+			visibility := body.Visibility
+			if visibility == "" {
+				visibility = "public"
+			}
+			allowComment := true
+			if body.AllowComment != nil {
+				allowComment = *body.AllowComment
+			}
+
 			post := models.Post{
 				AuthorID:     authorID,
 				AuthorName:   authorName,
@@ -227,6 +242,9 @@ func NewPostsHandler(db *gorm.DB) http.HandlerFunc {
 				Title:        body.Title,
 				Content:      body.Content,
 				ImageColor:   imageColor,
+				Location:     body.Location,
+				Visibility:   visibility,
+				AllowComment: allowComment,
 			}
 			if err := db.Create(&post).Error; err != nil {
 				http.Error(w, "Failed to save post: "+err.Error(), http.StatusInternalServerError)
@@ -268,6 +286,9 @@ func NewPostsHandler(db *gorm.DB) http.HandlerFunc {
 				Title:        post.Title,
 				Content:      post.Content,
 				ImageColor:   post.ImageColor,
+				Location:     post.Location,
+				Visibility:   post.Visibility,
+				AllowComment: post.AllowComment,
 				Likes:        0,
 				Comments:     0,
 				Timestamp:    post.CreatedAt,

@@ -16,6 +16,9 @@ type Post struct {
 	Title        string    `gorm:"type:text;default:''" json:"title"`
 	Content      string    `gorm:"type:text;not null" json:"content"`
 	ImageColor   string    `gorm:"type:text;default:'blue'" json:"imageColor"`
+	Location     string    `gorm:"type:text;default:''" json:"location"`
+	Visibility   string    `gorm:"type:text;default:'public'" json:"visibility"`
+	AllowComment bool      `gorm:"default:true" json:"allowComment"`
 	CreatedAt    time.Time `json:"createdAt"`
 	UpdatedAt    time.Time `json:"updatedAt"`
 
