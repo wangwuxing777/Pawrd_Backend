@@ -169,49 +169,6 @@ func main() {
 	// One-time migration: generate thumbnails for existing images
 	MigrateImageThumbnails(db, publicBaseURL)
 
-	// Temporary diagnostic endpoint
-	mux.HandleFunc("/api/debug/uploads", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		fmt.Fprintln(w, "=== UPLOADS DIRECTORY ===")
-		entries, err := os.ReadDir("assets/uploads")
-		if err != nil {
-			fmt.Fprintf(w, "ERROR reading assets/uploads: %v\n", err)
-		} else {
-			for _, e := range entries {
-				info, _ := e.Info()
-				if info != nil {
-					fmt.Fprintf(w, "  %s  (%d bytes, dir=%v)\n", e.Name(), info.Size(), e.IsDir())
-				}
-			}
-			fmt.Fprintf(w, "  Total: %d entries\n", len(entries))
-		}
-
-		fmt.Fprintln(w, "\n=== THUMBS DIRECTORY ===")
-		thumbEntries, err := os.ReadDir("assets/uploads/thumbs")
-		if err != nil {
-			fmt.Fprintf(w, "ERROR reading assets/uploads/thumbs: %v\n", err)
-		} else {
-			for _, e := range thumbEntries {
-				info, _ := e.Info()
-				if info != nil {
-					fmt.Fprintf(w, "  %s  (%d bytes)\n", e.Name(), info.Size())
-				}
-			}
-			fmt.Fprintf(w, "  Total: %d entries\n", len(thumbEntries))
-		}
-
-		fmt.Fprintln(w, "\n=== DATABASE: post_images ===")
-		var images []models.PostImage
-		db.Find(&images)
-		for _, img := range images {
-			fmt.Fprintf(w, "  ID=%d PostID=%s\n", img.ID, img.PostID)
-			fmt.Fprintf(w, "    URL:       %s\n", img.ImageURL)
-			fmt.Fprintf(w, "    Thumb:     %s\n", img.ThumbnailURL)
-			fmt.Fprintf(w, "    W=%d H=%d\n", img.Width, img.Height)
-		}
-		fmt.Fprintf(w, "  Total: %d records\n", len(images))
-	})
-
 	// Core handlers
 	mux.HandleFunc("/vaccines", handlers.VaccinesHandler)
 	mux.HandleFunc("/register", handlers.RegisterHandler)

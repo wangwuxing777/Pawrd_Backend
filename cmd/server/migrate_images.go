@@ -19,6 +19,48 @@ import (
 )
 
 func MigrateImageThumbnails(db *gorm.DB, publicBaseURL string) {
+	publicBaseURL = strings.TrimRight(publicBaseURL, "/")
+	uploadsDir := "assets/uploads"
+	thumbsDir := "assets/uploads/thumbs"
+	_ = os.MkdirAll(thumbsDir, 0755)
+
+	// --- Phase 1: Fix any localhost URLs in existing records ---
+	var allImages []models.PostImage
+	if err := db.Where("thumbnail_url LIKE '%localhost%' OR image_url LIKE '%localhost%'").Find(&allImages).Error; err != nil {
+		log.Printf("migrate_images: failed to query localhost images: %v", err)
+	} else if len(allImages) > 0 {
+		fixed := 0
+		for _, img := range allImages {
+			updates := map[string]interface{}{}
+
+			if strings.Contains(img.ImageURL, "localhost") {
+				filename := extractFilename(img.ImageURL)
+				if filename != "" {
+					updates["image_url"] = fmt.Sprintf("%s/uploads/%s", publicBaseURL, filename)
+				}
+			}
+
+			if strings.Contains(img.ThumbnailURL, "localhost") {
+				thumbFilename := extractFilename(img.ThumbnailURL)
+				if thumbFilename != "" {
+					updates["thumbnail_url"] = fmt.Sprintf("%s/uploads/thumbs/%s", publicBaseURL, thumbFilename)
+				}
+			}
+
+			if len(updates) > 0 {
+				if err := db.Model(&models.PostImage{}).Where("id = ?", img.ID).Updates(updates).Error; err != nil {
+					log.Printf("migrate_images: failed to fix localhost URL for %s: %v", img.ID, err)
+				} else {
+					fixed++
+				}
+			}
+		}
+		if fixed > 0 {
+			log.Printf("migrate_images: fixed %d localhost URLs", fixed)
+		}
+	}
+
+	// --- Phase 2: Generate thumbnails for images that have none ---
 	var images []models.PostImage
 	if err := db.Where("thumbnail_url = '' OR thumbnail_url IS NULL").Find(&images).Error; err != nil {
 		log.Printf("migrate_images: failed to query post_images: %v", err)
@@ -28,11 +70,6 @@ func MigrateImageThumbnails(db *gorm.DB, publicBaseURL string) {
 		return
 	}
 
-	uploadsDir := "assets/uploads"
-	thumbsDir := "assets/uploads/thumbs"
-	_ = os.MkdirAll(thumbsDir, 0755)
-
-	publicBaseURL = strings.TrimRight(publicBaseURL, "/")
 	migrated := 0
 
 	for _, img := range images {
