@@ -170,6 +170,14 @@ func main() {
 	MigrateImageThumbnails(db, publicBaseURL)
 
 	// Core handlers
+	mux.HandleFunc("/api/admin/clear-posts", func(w http.ResponseWriter, r *http.Request) {
+		db.Exec("DELETE FROM post_comments")
+		db.Exec("DELETE FROM post_likes")
+		db.Exec("DELETE FROM post_collections")
+		db.Exec("DELETE FROM post_images")
+		db.Exec("DELETE FROM posts")
+		w.Write([]byte("All test posts and related data have been cleared!"))
+	})
 	mux.HandleFunc("/vaccines", handlers.VaccinesHandler)
 	mux.HandleFunc("/register", handlers.RegisterHandler)
 	mux.HandleFunc("/posts", handlers.NewPostsHandler(db))
