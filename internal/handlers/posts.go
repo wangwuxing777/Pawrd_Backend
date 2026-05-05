@@ -137,6 +137,54 @@ func NewPostsHandler(db *gorm.DB) http.HandlerFunc {
 				}
 
 				query = query.Where("author_id IN ?", followeeIDs)
+			} else if feedType == "my_posts" {
+				if requesterID == "" {
+					http.Error(w, "missing user id", http.StatusUnauthorized)
+					return
+				}
+				query = query.Where("author_id = ?", requesterID)
+			} else if feedType == "liked" {
+				if requesterID == "" {
+					http.Error(w, "missing user id", http.StatusUnauthorized)
+					return
+				}
+				var likedPostIDs []string
+				if err := db.Model(&models.PostLike{}).
+					Where("user_id = ?", requesterID).
+					Pluck("post_id", &likedPostIDs).Error; err != nil {
+					http.Error(w, "Failed to fetch liked posts: "+err.Error(), http.StatusInternalServerError)
+					return
+				}
+				if len(likedPostIDs) == 0 {
+					w.Header().Set("Content-Type", "application/json")
+					if usePaging {
+						w.Header().Set("X-Has-More", "false")
+					}
+					json.NewEncoder(w).Encode([]models.BlogPost{})
+					return
+				}
+				query = query.Where("id IN ?", likedPostIDs)
+			} else if feedType == "collected" {
+				if requesterID == "" {
+					http.Error(w, "missing user id", http.StatusUnauthorized)
+					return
+				}
+				var collectedPostIDs []string
+				if err := db.Model(&models.PostCollection{}).
+					Where("user_id = ?", requesterID).
+					Pluck("post_id", &collectedPostIDs).Error; err != nil {
+					http.Error(w, "Failed to fetch collected posts: "+err.Error(), http.StatusInternalServerError)
+					return
+				}
+				if len(collectedPostIDs) == 0 {
+					w.Header().Set("Content-Type", "application/json")
+					if usePaging {
+						w.Header().Set("X-Has-More", "false")
+					}
+					json.NewEncoder(w).Encode([]models.BlogPost{})
+					return
+				}
+				query = query.Where("id IN ?", collectedPostIDs)
 			}
 
 			if cursorStr != "" {
