@@ -20,9 +20,10 @@ type Post struct {
 	UpdatedAt    time.Time `json:"updatedAt"`
 
 	// Relationships
-	Images   []PostImage   `gorm:"foreignKey:PostID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"images,omitempty"`
-	Likes    []PostLike    `gorm:"foreignKey:PostID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"likes,omitempty"`
-	Comments []PostComment `gorm:"foreignKey:PostID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"comments,omitempty"`
+	Images      []PostImage      `gorm:"foreignKey:PostID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"images,omitempty"`
+	Likes       []PostLike       `gorm:"foreignKey:PostID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"likes,omitempty"`
+	Comments    []PostComment    `gorm:"foreignKey:PostID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"comments,omitempty"`
+	Collections []PostCollection `gorm:"foreignKey:PostID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"collections,omitempty"`
 }
 
 // BeforeCreate generates UUID before inserting a new record
@@ -35,14 +36,16 @@ func (p *Post) BeforeCreate(tx *gorm.DB) error {
 
 // PostResponse is the API response format for posts
 type PostResponse struct {
-	ID        string    `json:"id"`
-	AuthorID  string    `json:"authorId"`
-	Content   string    `json:"content"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
-	Images    []string  `json:"images"`
-	LikeCount int       `json:"likeCount"`
-	IsLiked   bool      `json:"isLiked"`
+	ID           string    `json:"id"`
+	AuthorID     string    `json:"authorId"`
+	Content      string    `json:"content"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
+	Images       []string  `json:"images"`
+	LikeCount    int       `json:"likeCount"`
+	IsLiked      bool      `json:"isLiked"`
+	CollectCount int       `json:"collectCount"`
+	IsCollected  bool      `json:"isCollected"`
 }
 
 // ToResponse converts a Post to PostResponse
@@ -60,16 +63,26 @@ func (p *Post) ToResponse(currentUserID string) PostResponse {
 			break
 		}
 	}
+	collectCount := len(p.Collections)
+	isCollected := false
+	for _, collect := range p.Collections {
+		if collect.UserID == currentUserID {
+			isCollected = true
+			break
+		}
+	}
 
 	return PostResponse{
-		ID:        p.ID,
-		AuthorID:  p.AuthorID,
-		Content:   p.Content,
-		CreatedAt: p.CreatedAt,
-		UpdatedAt: p.UpdatedAt,
-		Images:    imageURLs,
-		LikeCount: likeCount,
-		IsLiked:   isLiked,
+		ID:           p.ID,
+		AuthorID:     p.AuthorID,
+		Content:      p.Content,
+		CreatedAt:    p.CreatedAt,
+		UpdatedAt:    p.UpdatedAt,
+		Images:       imageURLs,
+		LikeCount:    likeCount,
+		IsLiked:      isLiked,
+		CollectCount: collectCount,
+		IsCollected:  isCollected,
 	}
 }
 

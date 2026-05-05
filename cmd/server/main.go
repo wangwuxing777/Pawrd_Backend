@@ -156,9 +156,18 @@ func main() {
 
 	// Media upload + static file serving
 	uploadsDir := "assets/uploads"
+	thumbnailsDir := "assets/uploads/thumbs"
 	_ = os.MkdirAll(uploadsDir, 0755)
-	mux.HandleFunc("/media/upload", handlers.NewMediaUploadHandler("http://localhost:8000"))
+	_ = os.MkdirAll(thumbnailsDir, 0755)
+	publicBaseURL := os.Getenv("PUBLIC_BASE_URL")
+	if publicBaseURL == "" {
+		publicBaseURL = "http://localhost:" + port
+	}
+	mux.HandleFunc("/media/upload", handlers.NewMediaUploadHandler(publicBaseURL))
 	mux.Handle("/uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir(uploadsDir))))
+
+	// One-time migration: generate thumbnails for existing images
+	MigrateImageThumbnails(db, publicBaseURL)
 
 	// Core handlers
 	mux.HandleFunc("/vaccines", handlers.VaccinesHandler)
@@ -166,8 +175,12 @@ func main() {
 	mux.HandleFunc("/posts", handlers.NewPostsHandler(db))
 	mux.HandleFunc("/posts/{id}", handlers.NewPostDetailHandler(db))
 	mux.HandleFunc("/posts/{id}/like", handlers.NewPostLikeHandler(db))
+	mux.HandleFunc("/posts/{id}/collect", handlers.NewPostCollectHandler(db))
 	mux.HandleFunc("/posts/{id}/comments", handlers.NewPostCommentsHandler(db))
 	mux.HandleFunc("/posts/{id}/comments/{commentId}", handlers.NewCommentDeleteHandler(db))
+	mux.HandleFunc("/users/{id}/follow", handlers.NewUserFollowHandler(db))
+	mux.HandleFunc("/users/{id}/followers", handlers.NewUserFollowersHandler(db))
+	mux.HandleFunc("/users/{id}/following", handlers.NewUserFollowingHandler(db))
 
 	// Seed test accounts on every startup (idempotent — skips existing)
 	SeedTestAccounts()
@@ -213,9 +226,6 @@ func main() {
 	mux.HandleFunc("/api/shop/categories", handlers.NewShopCategoriesHandler(cfg))
 	mux.HandleFunc("/api/shop/search", handlers.NewShopSearchHandler(cfg))
 	mux.HandleFunc("/api/shop/checkout/payment-sheet", handlers.NewShopPaymentSheetHandler(cfg))
-
-	// Blog handlers
-	mux.HandleFunc("/api/posts", handlers.NewBlogHandler(db))
 
 	// Medical services handlers (public + admin)
 	mux.HandleFunc("/api/medical/services", handlers.NewMedicalServicesHandler(db))

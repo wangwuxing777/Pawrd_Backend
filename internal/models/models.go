@@ -28,18 +28,28 @@ type User struct {
 }
 
 type BlogPost struct {
-	ID           string    `json:"id"`
-	AuthorID     string    `json:"authorId"`
-	AuthorName   string    `json:"authorName"`
-	AuthorAvatar string    `json:"authorAvatar"`
-	Title        string    `json:"title"`
-	Content      string    `json:"content"`
-	ImageColor   string    `json:"imageColor"`
-	Likes        int       `json:"likes"`
-	Comments     int       `json:"comments"`
-	Timestamp    time.Time `json:"timestamp"`
-	ImageUrls    []string  `json:"imageUrls,omitempty"` // attached image URLs
-	IsLiked      bool      `json:"isLiked"`             // whether the requesting user has liked this post
+	ID           string          `json:"id"`
+	AuthorID     string          `json:"authorId"`
+	AuthorName   string          `json:"authorName"`
+	AuthorAvatar string          `json:"authorAvatar"`
+	Title        string          `json:"title"`
+	Content      string          `json:"content"`
+	ImageColor   string          `json:"imageColor"`
+	Likes        int             `json:"likes"`
+	CollectCount int             `json:"collectCount"`
+	Comments     int             `json:"comments"`
+	Timestamp    time.Time       `json:"timestamp"`
+	ImageUrls    []string        `json:"imageUrls,omitempty"` // attached image URLs
+	ImageMeta    []BlogImageMeta `json:"imageMeta,omitempty"`
+	IsLiked      bool            `json:"isLiked"`     // whether the requesting user has liked this post
+	IsCollected  bool            `json:"isCollected"` // whether the requesting user has collected this post
+}
+
+type BlogImageMeta struct {
+	URL          string `json:"url"`
+	ThumbnailURL string `json:"thumbnailUrl,omitempty"`
+	Width        int    `json:"width"`
+	Height       int    `json:"height"`
 }
 
 type Clinic struct {
