@@ -47,6 +47,8 @@ func InitDB(cfg *config.Config) (*gorm.DB, error) {
 		&RagDocument{},
 		&RagChunk{},
 		&RagIngestRun{},
+		&FriendRequest{},
+		&Friend{},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to auto migrate schema: %w", err)
@@ -55,7 +57,7 @@ func InitDB(cfg *config.Config) (*gorm.DB, error) {
 	// If using PostgreSQL, migrate Auth schema to the same database
 	if dsn != "" {
 		log.Println("Migrating Auth schema to PostgreSQL database...")
-		err = db.AutoMigrate(&AuthUser{})
+		err = db.AutoMigrate(&AuthUser{}, &FriendRequest{}, &Friend{})
 		if err != nil {
 			return nil, fmt.Errorf("failed to auto migrate auth schema: %w", err)
 		}
@@ -80,7 +82,7 @@ func InitAuthDB() error {
 		return fmt.Errorf("failed to connect auth database: %w", err)
 	}
 
-	err = db.AutoMigrate(&AuthUser{})
+	err = db.AutoMigrate(&AuthUser{}, &FriendRequest{}, &Friend{})
 	if err != nil {
 		return fmt.Errorf("failed to auto migrate auth schema: %w", err)
 	}

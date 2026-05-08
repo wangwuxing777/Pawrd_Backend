@@ -10,8 +10,9 @@ import (
 // AuthUser is the authentication user stored in users.db
 type AuthUser struct {
 	ID           uint      `json:"id" gorm:"primaryKey;autoIncrement"`
+	Username     string    `json:"username" gorm:"uniqueIndex;not null"`
 	Email        string    `json:"email" gorm:"uniqueIndex;not null"`
-	Phone        string    `json:"phone" gorm:"uniqueIndex;not null"`
+	Phone        string    `json:"phone" gorm:"uniqueIndex"`
 	PasswordHash string    `json:"-" gorm:"not null"`
 	Name         string    `json:"name" gorm:"not null"`
 	AvatarURL    string    `json:"avatar_url" gorm:"default:''"`
@@ -21,6 +22,7 @@ type AuthUser struct {
 // AuthUserResponse is the safe public representation sent to clients (no password hash).
 type AuthUserResponse struct {
 	ID        string    `json:"id"`
+	Username  string    `json:"username"`
 	Email     string    `json:"email"`
 	Name      string    `json:"name"`
 	AvatarURL string    `json:"avatar_url"`
@@ -31,6 +33,7 @@ type AuthUserResponse struct {
 func (u *AuthUser) ToResponse() AuthUserResponse {
 	return AuthUserResponse{
 		ID:        fmt.Sprintf("%d", u.ID),
+		Username:  u.Username,
 		Email:     u.Email,
 		Name:      u.Name,
 		AvatarURL: u.AvatarURL,

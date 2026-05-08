@@ -240,6 +240,12 @@ func main() {
 	mux.HandleFunc("/api/admin/partners/{id}/approve", partnerAction)
 	mux.HandleFunc("/api/admin/partners/{id}/reject", partnerAction)
 
+	// User search + friend system (requires JWT auth via middleware)
+	mux.HandleFunc("/api/users/search", handlers.NewUserSearchHandler(db))
+	mux.HandleFunc("/api/friends", handlers.NewFriendsListHandler(db))
+	mux.HandleFunc("/api/friends/request", handlers.NewSendFriendRequestHandler(db))
+	mux.HandleFunc("/api/friends/respond", handlers.NewRespondFriendRequestHandler(db))
+
 	// Seed medical demo content on startup (idempotent)
 	SeedMedicalServices(db)
 

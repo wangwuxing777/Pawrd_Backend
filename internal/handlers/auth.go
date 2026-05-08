@@ -45,7 +45,7 @@ func NewAuthLoginHandler() http.HandlerFunc {
 		}
 
 		var user models.AuthUser
-		if err := models.AuthDB.Where("email = ? OR phone = ?", identifier, identifier).First(&user).Error; err != nil {
+		if err := models.AuthDB.Where("email = ? OR phone = ? OR username = ?", identifier, identifier, identifier).First(&user).Error; err != nil {
 			writeAuthError(w, http.StatusUnauthorized, "Invalid credentials")
 			return
 		}
@@ -72,6 +72,7 @@ func NewAuthLoginHandler() http.HandlerFunc {
 // ── Register ───────────────────────────────────────────────────────────────
 
 type RegisterRequest struct {
+	Username string `json:"username"`
 	Name     string `json:"name"`
 	Email    string `json:"email"`
 	Password string `json:"password"`
@@ -97,9 +98,14 @@ func NewAuthRegisterHandler() http.HandlerFunc {
 
 		req.Name = strings.TrimSpace(req.Name)
 		req.Email = strings.TrimSpace(strings.ToLower(req.Email))
+		req.Username = strings.TrimSpace(strings.ToLower(req.Username))
 
-		if req.Name == "" || req.Email == "" || req.Password == "" {
-			writeAuthError(w, http.StatusBadRequest, "Name, email and password are required")
+		if req.Username == "" || req.Name == "" || req.Email == "" || req.Password == "" {
+			writeAuthError(w, http.StatusBadRequest, "Username, name, email and password are required")
+			return
+		}
+		if len(req.Username) < 3 {
+			writeAuthError(w, http.StatusBadRequest, "Username must be at least 3 characters")
 			return
 		}
 		if len(req.Password) < 6 {
@@ -114,14 +120,22 @@ func NewAuthRegisterHandler() http.HandlerFunc {
 			return
 		}
 
+		// Check duplicate username
+		var existingUsername models.AuthUser
+		if err := models.AuthDB.Where("username = ?", req.Username).First(&existingUsername).Error; err == nil {
+			writeAuthError(w, http.StatusConflict, "Username already taken")
+			return
+		}
+
 		hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 		if err != nil {
 			writeAuthError(w, http.StatusInternalServerError, "Failed to process password")
 			return
 		}
 
-		// Phone is required by the schema but not by this flow — use a unique placeholder
+		// Phone is optional in this flow — use a unique placeholder
 		user := models.AuthUser{
+			Username:     req.Username,
 			Email:        req.Email,
 			Phone:        "phone-not-set-" + uuid.New().String(),
 			PasswordHash: string(hash),
