@@ -61,6 +61,10 @@ func InitDB(cfg *config.Config) (*gorm.DB, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to auto migrate auth schema: %w", err)
 		}
+		// Backfill username for existing rows where username is empty
+		db.Exec("UPDATE auth_users SET username = email WHERE username IS NULL OR username = ''")
+		// Now enforce NOT NULL at DB level (safe because all rows have been backfilled)
+		db.Exec("ALTER TABLE auth_users ALTER COLUMN username SET NOT NULL")
 		AuthDB = db
 	}
 
@@ -86,6 +90,11 @@ func InitAuthDB() error {
 	if err != nil {
 		return fmt.Errorf("failed to auto migrate auth schema: %w", err)
 	}
+
+	// Backfill username for existing rows where username is empty
+	db.Exec("UPDATE auth_users SET username = email WHERE username IS NULL OR username = ''")
+	// Enforce NOT NULL at DB level (safe because all rows have been backfilled)
+	db.Exec("ALTER TABLE auth_users ALTER COLUMN username SET NOT NULL")
 
 	AuthDB = db
 	log.Println("Auth database (users.db) connection established and migrated.")

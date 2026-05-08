@@ -10,7 +10,7 @@ import (
 // AuthUser is the authentication user stored in users.db
 type AuthUser struct {
 	ID           uint      `json:"id" gorm:"primaryKey;autoIncrement"`
-	Username     string    `json:"username" gorm:"uniqueIndex;not null"`
+	Username     string    `json:"username" gorm:"uniqueIndex;default:''"`
 	Email        string    `json:"email" gorm:"uniqueIndex;not null"`
 	Phone        string    `json:"phone" gorm:"uniqueIndex"`
 	PasswordHash string    `json:"-" gorm:"not null"`
