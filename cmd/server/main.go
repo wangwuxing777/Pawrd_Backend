@@ -242,6 +242,9 @@ func main() {
 	mux.HandleFunc("/api/profile/health-reports/{id}", handlers.NewHealthReportDetailHandler(db))
 	mux.HandleFunc("/api/profile/health-reports/observations/{observationId}/review", handlers.NewObservationReviewHandler(db))
 	mux.HandleFunc("/api/profile/pets/{petId}/health", handlers.NewPetHealthProfileHandler(db))
+	mux.HandleFunc("/api/profile/pets/{petId}/share-grants", handlers.NewPetAccessGrantsHandler(db))
+	mux.HandleFunc("/api/profile/pets/{petId}/share-grants/{grantId}/revoke", handlers.NewPetAccessGrantRevokeHandler(db))
+	mux.HandleFunc("/api/share/{token}", handlers.NewShareResolveHandler(db))
 
 	// Partner application handlers
 	mux.HandleFunc("/api/partners/apply", handlers.NewPartnersApplyHandler(db))
