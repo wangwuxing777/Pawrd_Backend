@@ -50,6 +50,7 @@ func InitDB(cfg *config.Config) (*gorm.DB, error) {
 		&RagDocument{},
 		&RagChunk{},
 		&RagIngestRun{},
+		&Notification{},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to auto migrate schema: %w", err)

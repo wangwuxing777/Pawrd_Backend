@@ -38,7 +38,7 @@ func NewPostLikeHandler(db *gorm.DB) http.HandlerFunc {
 
 		// Verify the post exists.
 		var post models.Post
-		if err := db.Select("id").First(&post, "id = ?", postID).Error; err != nil {
+		if err := db.Select("id, author_id, title").First(&post, "id = ?", postID).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				http.Error(w, "post not found", http.StatusNotFound)
 				return
@@ -79,6 +79,15 @@ func NewPostLikeHandler(db *gorm.DB) http.HandlerFunc {
 		if err != nil {
 			http.Error(w, "failed to toggle like: "+err.Error(), http.StatusInternalServerError)
 			return
+		}
+
+		if liked {
+			actorName := r.Header.Get("X-User-Name")
+			actorAvatar := r.Header.Get("X-User-Avatar")
+			if actorName == "" {
+				actorName = "Someone"
+			}
+			go CreateNotification(db, post.AuthorID, "like", userID, actorName, actorAvatar, postID, post.Title, "")
 		}
 
 		w.Header().Set("Content-Type", "application/json")

@@ -29,7 +29,7 @@ func NewPostCommentsHandler(db *gorm.DB) http.HandlerFunc {
 
 		// Verify the post exists so we don't silently accept orphaned comments
 		var post models.Post
-		if err := db.Select("id").First(&post, "id = ?", postID).Error; err != nil {
+		if err := db.Select("id, author_id, title").First(&post, "id = ?", postID).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				http.Error(w, "post not found", http.StatusNotFound)
 				return
@@ -92,6 +92,8 @@ func NewPostCommentsHandler(db *gorm.DB) http.HandlerFunc {
 				http.Error(w, "failed to save comment: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
+
+			go CreateNotification(db, post.AuthorID, "comment", authorID, authorName, authorAvatar, postID, post.Title, body.Content)
 
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)

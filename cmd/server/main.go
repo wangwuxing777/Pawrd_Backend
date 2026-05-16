@@ -183,6 +183,9 @@ func main() {
 	mux.HandleFunc("/users/{id}/follow", handlers.NewUserFollowHandler(db))
 	mux.HandleFunc("/users/{id}/followers", handlers.NewUserFollowersHandler(db))
 	mux.HandleFunc("/users/{id}/following", handlers.NewUserFollowingHandler(db))
+	mux.HandleFunc("/notifications", handlers.NewNotificationsHandler(db))
+	mux.HandleFunc("/notifications/unread-count", handlers.NewNotificationsUnreadCountHandler(db))
+	mux.HandleFunc("/notifications/read-all", handlers.NewNotificationsReadAllHandler(db))
 
 	// Seed test accounts on every startup (idempotent — skips existing)
 	SeedTestAccounts()
