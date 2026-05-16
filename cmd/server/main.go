@@ -173,6 +173,8 @@ func main() {
 	mux.HandleFunc("/vaccines", handlers.VaccinesHandler)
 	mux.HandleFunc("/register", handlers.RegisterHandler)
 	mux.HandleFunc("/posts", handlers.NewPostsHandler(db))
+	mux.HandleFunc("/posts/search", handlers.NewPostSearchHandler(db))
+	mux.HandleFunc("/posts/hot-keywords", handlers.NewPostHotKeywordsHandler(db))
 	mux.HandleFunc("/posts/{id}", handlers.NewPostDetailHandler(db))
 	mux.HandleFunc("/posts/{id}/like", handlers.NewPostLikeHandler(db))
 	mux.HandleFunc("/posts/{id}/collect", handlers.NewPostCollectHandler(db))

@@ -67,6 +67,51 @@ func toBlogPost(p models.Post, requesterID string) models.BlogPost {
 	}
 }
 
+// NewPostHotKeywordsHandler returns suggested search keywords derived from recent popular posts.
+func NewPostHotKeywordsHandler(db *gorm.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		EnableCors(&w)
+		if r.Method == http.MethodOptions {
+			return
+		}
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		type row struct {
+			Title string
+		}
+		var rows []row
+		db.Model(&models.Post{}).
+			Select("title").
+			Where("title != ''").
+			Order("created_at DESC").
+			Limit(50).
+			Find(&rows)
+
+		seen := make(map[string]bool)
+		keywords := make([]string, 0, 10)
+		for _, r := range rows {
+			t := strings.TrimSpace(r.Title)
+			if t == "" || seen[t] {
+				continue
+			}
+			seen[t] = true
+			if len(t) > 20 {
+				t = t[:20]
+			}
+			keywords = append(keywords, t)
+			if len(keywords) >= 10 {
+				break
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(keywords)
+	}
+}
+
 // NewPostsHandler returns an http.HandlerFunc for GET/POST /posts backed by SQLite.
 // GET  /posts  — returns all posts as []BlogPost (iOS-compatible format)
 // POST /posts  — creates a post, persists to SQLite, returns the created BlogPost
@@ -364,6 +409,79 @@ func NewPostsHandler(db *gorm.DB) http.HandlerFunc {
 		default:
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
+	}
+}
+
+// NewPostSearchHandler returns an http.HandlerFunc for GET /posts/search?q=xxx&limit=20&cursor=...
+func NewPostSearchHandler(db *gorm.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		EnableCors(&w)
+		if r.Method == http.MethodOptions {
+			return
+		}
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		q := strings.TrimSpace(r.URL.Query().Get("q"))
+		if q == "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("X-Has-More", "false")
+			json.NewEncoder(w).Encode([]models.BlogPost{})
+			return
+		}
+
+		limit := 20
+		if l := strings.TrimSpace(r.URL.Query().Get("limit")); l != "" {
+			if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 50 {
+				limit = parsed
+			}
+		}
+
+		pattern := "%" + q + "%"
+		query := db.
+			Preload("Images").
+			Preload("Likes").
+			Preload("Comments").
+			Preload("Collections").
+			Where("title ILIKE ? OR content ILIKE ? OR author_name ILIKE ?", pattern, pattern, pattern).
+			Order("created_at DESC")
+
+		if cursorStr := strings.TrimSpace(r.URL.Query().Get("cursor")); cursorStr != "" {
+			cursor, err := time.Parse(time.RFC3339, cursorStr)
+			if err != nil {
+				http.Error(w, "invalid cursor", http.StatusBadRequest)
+				return
+			}
+			query = query.Where("created_at < ?", cursor)
+		}
+
+		query = query.Limit(limit + 1)
+
+		var posts []models.Post
+		if err := query.Find(&posts).Error; err != nil {
+			http.Error(w, "search failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		hasMore := len(posts) > limit
+		if hasMore {
+			posts = posts[:limit]
+		}
+
+		requesterID := strings.TrimSpace(r.Header.Get("X-User-Id"))
+		result := make([]models.BlogPost, 0, len(posts))
+		for _, p := range posts {
+			result = append(result, toBlogPost(p, requesterID))
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Has-More", strconv.FormatBool(hasMore))
+		if len(posts) > 0 {
+			w.Header().Set("X-Next-Cursor", posts[len(posts)-1].CreatedAt.Format(time.RFC3339))
+		}
+		json.NewEncoder(w).Encode(result)
 	}
 }
 
