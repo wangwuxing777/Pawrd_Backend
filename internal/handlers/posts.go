@@ -98,8 +98,9 @@ func NewPostHotKeywordsHandler(db *gorm.DB) http.HandlerFunc {
 				continue
 			}
 			seen[t] = true
-			if len(t) > 20 {
-				t = t[:20]
+			runes := []rune(t)
+			if len(runes) > 18 {
+				t = string(runes[:18])
 			}
 			keywords = append(keywords, t)
 			if len(keywords) >= 10 {
