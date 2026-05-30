@@ -11,17 +11,44 @@ import (
 	"gorm.io/gorm"
 )
 
-// resolveDMUser looks up a user's display name and avatar from the auth
-// database. Returns empty strings if the user cannot be found.
-func resolveDMUser(id string) (name, avatar string) {
-	if models.AuthDB == nil || strings.TrimSpace(id) == "" {
+// resolveDMUser looks up a user's display name and avatar.
+//
+// The primary source is the auth database (AuthUser). Seed/test/demo accounts
+// often exist only as post authors and have no AuthUser row, or have an empty
+// AvatarURL there. To make those accounts render properly in chat and the share
+// picker, any missing name/avatar falls back to the user's most recent post
+// (Post.AuthorName / Post.AuthorAvatar) in the main database.
+func resolveDMUser(db *gorm.DB, id string) (name, avatar string) {
+	id = strings.TrimSpace(id)
+	if id == "" {
 		return "", ""
 	}
-	var user models.AuthUser
-	if err := models.AuthDB.First(&user, "id = ?", id).Error; err != nil {
-		return "", ""
+
+	if models.AuthDB != nil {
+		var user models.AuthUser
+		if err := models.AuthDB.First(&user, "id = ?", id).Error; err == nil {
+			name = strings.TrimSpace(user.Name)
+			avatar = strings.TrimSpace(user.AvatarURL)
+		}
 	}
-	return user.Name, user.AvatarURL
+
+	// Fill any gaps from the user's latest post.
+	if (name == "" || avatar == "") && db != nil {
+		var post models.Post
+		if err := db.Select("author_name, author_avatar").
+			Where("author_id = ?", id).
+			Order("created_at DESC").
+			First(&post).Error; err == nil {
+			if name == "" {
+				name = strings.TrimSpace(post.AuthorName)
+			}
+			if avatar == "" {
+				avatar = strings.TrimSpace(post.AuthorAvatar)
+			}
+		}
+	}
+
+	return name, avatar
 }
 
 // dmOtherParticipant returns the conversation participant that is not `me`.
@@ -173,7 +200,7 @@ func NewConversationsHandler(db *gorm.DB) http.HandlerFunc {
 				Count(&unread)
 
 			otherID := dmOtherParticipant(cid, me)
-			name, avatar := resolveDMUser(otherID)
+			name, avatar := resolveDMUser(db, otherID)
 
 			conversations = append(conversations, dmConversationDTO{
 				ConversationID:  cid,
@@ -237,7 +264,7 @@ func NewMessageThreadHandler(db *gorm.DB) http.HandlerFunc {
 			Where("conversation_id = ? AND recipient_id = ? AND is_read = ?", conversationID, me, false).
 			Update("is_read", true)
 
-		otherName, otherAvatar := resolveDMUser(other)
+		otherName, otherAvatar := resolveDMUser(db, other)
 
 		// Whether the requester is currently gated to a single message.
 		var otherReplies int64

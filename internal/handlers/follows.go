@@ -177,7 +177,54 @@ func NewUserFollowingDetailHandler(db *gorm.DB) http.HandlerFunc {
 		}
 		users := make([]followUser, 0, len(followeeIDs))
 		for _, fid := range followeeIDs {
-			name, avatar := resolveDMUser(fid)
+			name, avatar := resolveDMUser(db, fid)
+			users = append(users, followUser{ID: fid, Name: name, Avatar: avatar})
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"users": users,
+		})
+	}
+}
+
+// NewUserFollowersDetailHandler returns GET /users/{id}/followers-detail.
+// Like /followers, but resolves each follower's display name and avatar so the
+// result can directly back a UI list (e.g. the profile followers list).
+// Response: { "users": [ { "id", "name", "avatar" } ] }.
+func NewUserFollowersDetailHandler(db *gorm.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		EnableCors(&w)
+		if r.Method == http.MethodOptions {
+			return
+		}
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		userID := strings.TrimSpace(r.PathValue("id"))
+		if userID == "" {
+			http.Error(w, "user id required", http.StatusBadRequest)
+			return
+		}
+
+		var followerIDs []string
+		if err := db.Model(&models.UserFollow{}).
+			Where("followee_id = ?", userID).
+			Pluck("follower_id", &followerIDs).Error; err != nil {
+			http.Error(w, "failed to fetch followers: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		type followUser struct {
+			ID     string `json:"id"`
+			Name   string `json:"name"`
+			Avatar string `json:"avatar"`
+		}
+		users := make([]followUser, 0, len(followerIDs))
+		for _, fid := range followerIDs {
+			name, avatar := resolveDMUser(db, fid)
 			users = append(users, followUser{ID: fid, Name: name, Avatar: avatar})
 		}
 

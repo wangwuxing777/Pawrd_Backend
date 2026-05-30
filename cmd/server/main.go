@@ -185,6 +185,7 @@ func main() {
 	mux.HandleFunc("/users/{id}/followers", handlers.NewUserFollowersHandler(db))
 	mux.HandleFunc("/users/{id}/following", handlers.NewUserFollowingHandler(db))
 	mux.HandleFunc("/users/{id}/following-detail", handlers.NewUserFollowingDetailHandler(db))
+	mux.HandleFunc("/users/{id}/followers-detail", handlers.NewUserFollowersDetailHandler(db))
 	mux.HandleFunc("/users/{id}/stats", handlers.NewUserStatsHandler(db))
 
 	// Direct messages (1-on-1 chat)
