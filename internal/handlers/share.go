@@ -12,13 +12,14 @@ import (
 
 // NewPostShareHandler returns the handler for POST /posts/{id}/share.
 //
-// It delivers an in-app "share" notification to each target user so they can
-// open the shared post from their notification center. The actor is identified
-// by the X-User-Id / X-User-Name / X-User-Avatar headers (same convention as
-// the like/collect endpoints).
+// It sends the shared post as a direct message to each target user, so the
+// share shows up in both participants' chat conversation list (rendered as a
+// post card via the message's PostID). The actor is identified by the
+// X-User-Id / X-User-Name / X-User-Avatar headers (same convention as the
+// like/collect endpoints). Shares bypass the "one message until reply" gating.
 //
 // Request body: { "targetUserIds": ["..."] }
-// Response:     { "shared": <int> }  // number of recipients actually notified
+// Response:     { "shared": <int> }  // number of recipients actually messaged
 func NewPostShareHandler(db *gorm.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		EnableCors(&w)
@@ -65,15 +66,7 @@ func NewPostShareHandler(db *gorm.DB) http.HandlerFunc {
 			return
 		}
 
-		actorName := r.Header.Get("X-User-Name")
-		actorAvatar := r.Header.Get("X-User-Avatar")
-		if actorName == "" {
-			actorName = "Someone"
-		}
-
-		// De-duplicate targets and skip self-shares. CreateNotification also
-		// guards against actor == recipient, but doing it here keeps the count
-		// returned to the client honest.
+		// De-duplicate targets and skip self-shares.
 		seen := make(map[string]bool)
 		shared := 0
 		for _, target := range body.TargetUserIDs {
@@ -82,7 +75,18 @@ func NewPostShareHandler(db *gorm.DB) http.HandlerFunc {
 				continue
 			}
 			seen[target] = true
-			CreateNotification(db, target, "share", userID, actorName, actorAvatar, postID, post.Title, "")
+
+			msg := models.ChatMessage{
+				ConversationID: models.ConversationID(userID, target),
+				SenderID:       userID,
+				RecipientID:    target,
+				Content:        post.Title,
+				PostID:         postID,
+			}
+			if err := db.Create(&msg).Error; err != nil {
+				http.Error(w, "failed to send share: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
 			shared++
 		}
 

@@ -21,8 +21,11 @@ type ChatMessage struct {
 	SenderID       string    `gorm:"type:text;not null;index" json:"senderId"`
 	RecipientID    string    `gorm:"type:text;not null;index" json:"recipientId"`
 	Content        string    `gorm:"type:text;not null" json:"content"`
-	IsRead         bool      `gorm:"default:false" json:"isRead"`
-	CreatedAt      time.Time `json:"createdAt"`
+	// PostID is set when the message is a shared blog post; empty for plain text.
+	// The client renders such messages as a tappable post card.
+	PostID    string    `gorm:"type:text" json:"postId,omitempty"`
+	IsRead    bool      `gorm:"default:false" json:"isRead"`
+	CreatedAt time.Time `json:"createdAt"`
 }
 
 // BeforeCreate assigns a UUID and timestamp before insertion.
