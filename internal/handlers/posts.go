@@ -59,6 +59,7 @@ func toBlogPost(p models.Post, requesterID string) models.BlogPost {
 		Likes:        len(p.Likes),
 		CollectCount: len(p.Collections),
 		Comments:     len(p.Comments),
+		ViewCount:    p.Views,
 		Timestamp:    p.CreatedAt,
 		ImageUrls:    imageUrls,
 		ImageMeta:    imageMeta,
@@ -521,6 +522,18 @@ func NewPostDetailHandler(db *gorm.DB) http.HandlerFunc {
 			}
 
 			requesterID := strings.TrimSpace(r.Header.Get("X-User-Id"))
+
+			// Count a view for anyone other than the author. Atomic UpDate so
+			// concurrent reads don't lose increments; reflect the new value in
+			// the response without a re-read.
+			if requesterID != "" && requesterID != post.AuthorID {
+				if err := db.Model(&models.Post{}).
+					Where("id = ?", postID).
+					UpdateColumn("views", gorm.Expr("views + 1")).Error; err == nil {
+					post.Views++
+				}
+			}
+
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(toBlogPost(post, requesterID))
 

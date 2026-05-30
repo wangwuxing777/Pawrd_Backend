@@ -140,3 +140,74 @@ func NewUserFollowingHandler(db *gorm.DB) http.HandlerFunc {
 		})
 	}
 }
+
+// NewUserStatsHandler returns GET /users/{id}/stats.
+// Aggregates the headline counters shown on a profile:
+//   - postCount:      posts authored by the user
+//   - followerCount:  users following this user
+//   - followingCount: users this user follows
+//   - likeCount:      total likes received across all of the user's posts
+//   - viewCount:      total views across all of the user's posts
+//
+// When called with an X-User-Id header, also reports whether the requester
+// currently follows this user (`isFollowing`).
+func NewUserStatsHandler(db *gorm.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		EnableCors(&w)
+		if r.Method == http.MethodOptions {
+			return
+		}
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		userID := strings.TrimSpace(r.PathValue("id"))
+		if userID == "" {
+			http.Error(w, "user id required", http.StatusBadRequest)
+			return
+		}
+
+		var postCount int64
+		db.Model(&models.Post{}).Where("author_id = ?", userID).Count(&postCount)
+
+		var followerCount int64
+		db.Model(&models.UserFollow{}).Where("followee_id = ?", userID).Count(&followerCount)
+
+		var followingCount int64
+		db.Model(&models.UserFollow{}).Where("follower_id = ?", userID).Count(&followingCount)
+
+		// Total likes received across the user's posts.
+		var likeCount int64
+		db.Model(&models.PostLike{}).
+			Where("post_id IN (?)",
+				db.Model(&models.Post{}).Select("id").Where("author_id = ?", userID),
+			).Count(&likeCount)
+
+		// Total views across the user's posts.
+		var viewSum struct{ Total int64 }
+		db.Model(&models.Post{}).
+			Select("COALESCE(SUM(views), 0) AS total").
+			Where("author_id = ?", userID).
+			Scan(&viewSum)
+
+		isFollowing := false
+		if requester := strings.TrimSpace(r.Header.Get("X-User-Id")); requester != "" && requester != userID {
+			var rel int64
+			db.Model(&models.UserFollow{}).
+				Where("follower_id = ? AND followee_id = ?", requester, userID).
+				Count(&rel)
+			isFollowing = rel > 0
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"postCount":      int(postCount),
+			"followerCount":  int(followerCount),
+			"followingCount": int(followingCount),
+			"likeCount":      int(likeCount),
+			"viewCount":      int(viewSum.Total),
+			"isFollowing":    isFollowing,
+		})
+	}
+}

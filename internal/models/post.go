@@ -19,6 +19,7 @@ type Post struct {
 	Location     string    `gorm:"type:text;default:''" json:"location"`
 	Visibility   string    `gorm:"type:text;default:'public'" json:"visibility"`
 	AllowComment bool      `gorm:"default:true" json:"allowComment"`
+	Views        int       `gorm:"default:0" json:"views"`
 	CreatedAt    time.Time `json:"createdAt"`
 	UpdatedAt    time.Time `json:"updatedAt"`
 

@@ -41,6 +41,7 @@ type BlogPost struct {
 	Likes        int             `json:"likes"`
 	CollectCount int             `json:"collectCount"`
 	Comments     int             `json:"comments"`
+	ViewCount    int             `json:"viewCount"`
 	Timestamp    time.Time       `json:"timestamp"`
 	ImageUrls    []string        `json:"imageUrls,omitempty"` // attached image URLs
 	ImageMeta    []BlogImageMeta `json:"imageMeta,omitempty"`
