@@ -141,6 +141,53 @@ func NewUserFollowingHandler(db *gorm.DB) http.HandlerFunc {
 	}
 }
 
+// NewUserFollowingDetailHandler returns GET /users/{id}/following-detail.
+// Like /following, but resolves each followee's display name and avatar so the
+// result can directly back a UI list (e.g. the share-to-following picker).
+// Response: { "users": [ { "id", "name", "avatar" } ] }.
+func NewUserFollowingDetailHandler(db *gorm.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		EnableCors(&w)
+		if r.Method == http.MethodOptions {
+			return
+		}
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		userID := strings.TrimSpace(r.PathValue("id"))
+		if userID == "" {
+			http.Error(w, "user id required", http.StatusBadRequest)
+			return
+		}
+
+		var followeeIDs []string
+		if err := db.Model(&models.UserFollow{}).
+			Where("follower_id = ?", userID).
+			Pluck("followee_id", &followeeIDs).Error; err != nil {
+			http.Error(w, "failed to fetch following: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		type followUser struct {
+			ID     string `json:"id"`
+			Name   string `json:"name"`
+			Avatar string `json:"avatar"`
+		}
+		users := make([]followUser, 0, len(followeeIDs))
+		for _, fid := range followeeIDs {
+			name, avatar := resolveDMUser(fid)
+			users = append(users, followUser{ID: fid, Name: name, Avatar: avatar})
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"users": users,
+		})
+	}
+}
+
 // NewUserStatsHandler returns GET /users/{id}/stats.
 // Aggregates the headline counters shown on a profile:
 //   - postCount:      posts authored by the user
