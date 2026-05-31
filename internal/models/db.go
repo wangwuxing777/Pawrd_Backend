@@ -47,9 +47,6 @@ func InitDB(cfg *config.Config) (*gorm.DB, error) {
 		&ReportObservation{},
 		&ReportVendorExtraction{},
 		&PetAccessGrant{},
-		&RagDocument{},
-		&RagChunk{},
-		&RagIngestRun{},
 		&Notification{},
 		&ChatMessage{},
 	)

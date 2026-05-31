@@ -1,0 +1,382 @@
+package handlers
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/wangwuxing777/Pawrd_Backend/internal/config"
+)
+
+type chatSessionState struct {
+	Provider string
+}
+
+type chatSessionStore struct {
+	mu       sync.RWMutex
+	sessions map[string]chatSessionState
+}
+
+func NewChatSessionStore() *chatSessionStore {
+	return &chatSessionStore{
+		sessions: make(map[string]chatSessionState),
+	}
+}
+
+func (s *chatSessionStore) create() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id := uuid.NewString()
+	s.sessions[id] = chatSessionState{}
+	return id
+}
+
+func (s *chatSessionStore) setProvider(sessionID, provider string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, ok := s.sessions[sessionID]
+	if !ok {
+		return false
+	}
+	state.Provider = provider
+	s.sessions[sessionID] = state
+	return true
+}
+
+func (s *chatSessionStore) provider(sessionID string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.sessions[sessionID].Provider
+}
+
+type pythonRAGClient struct {
+	baseURL string
+	client  *http.Client
+}
+
+type goRAGClient struct {
+	baseURL string
+	client  *http.Client
+}
+
+func newPythonRAGClient(cfg *config.Config) *pythonRAGClient {
+	timeout := time.Duration(cfg.PythonRAGTimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 90 * time.Second
+	}
+	return &pythonRAGClient{
+		baseURL: strings.TrimRight(cfg.PythonRAGBaseURL, "/"),
+		client: &http.Client{
+			Timeout: timeout,
+		},
+	}
+}
+
+func newGoRAGClient(cfg *config.Config) *goRAGClient {
+	timeout := time.Duration(cfg.GoRAGTimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 90 * time.Second
+	}
+	return &goRAGClient{
+		baseURL: strings.TrimRight(cfg.GoRAGBaseURL, "/"),
+		client: &http.Client{
+			Timeout: timeout,
+		},
+	}
+}
+
+type legacyChatRequest struct {
+	Query     string `json:"query"`
+	SessionID string `json:"session_id"`
+	Model     string `json:"model"`
+	Provider  string `json:"provider"`
+	Tool      string `json:"tool"`
+}
+
+type legacyProviderSelectionRequest struct {
+	Provider string `json:"provider"`
+}
+
+type legacyChatResponse struct {
+	Answer         string   `json:"answer"`
+	Sources        []string `json:"sources"`
+	ActiveProvider string   `json:"active_provider,omitempty"`
+	SessionID      string   `json:"session_id,omitempty"`
+}
+
+type pythonQueryResponse struct {
+	Answer  string `json:"answer"`
+	Sources []struct {
+		SourceName string `json:"source_name"`
+		Section    string `json:"section_path"`
+		Clauses    string `json:"clauses"`
+		Snippet    string `json:"snippet"`
+	} `json:"sources"`
+}
+
+type goQueryResponse struct {
+	Answer  string `json:"answer"`
+	Sources []struct {
+		SourceName string `json:"source_name"`
+		Section    string `json:"section_path"`
+		Clauses    string `json:"clauses"`
+		Snippet    string `json:"snippet"`
+	} `json:"sources"`
+}
+
+type errorResponse struct {
+	Detail string `json:"detail"`
+}
+
+func NewChatSessionHandler(store *chatSessionStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		EnableCors(&w)
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		sessionID := store.create()
+		writeChatJSON(w, http.StatusOK, map[string]string{"session_id": sessionID})
+	}
+}
+
+func NewChatSessionProviderHandler(store *chatSessionStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		EnableCors(&w)
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		sessionID := strings.TrimSpace(r.PathValue("sessionID"))
+		if sessionID == "" {
+			writeChatJSON(w, http.StatusBadRequest, errorResponse{Detail: "missing session id"})
+			return
+		}
+
+		var req legacyProviderSelectionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeChatJSON(w, http.StatusBadRequest, errorResponse{Detail: "invalid request body"})
+			return
+		}
+
+		if ok := store.setProvider(sessionID, strings.TrimSpace(req.Provider)); !ok {
+			writeChatJSON(w, http.StatusNotFound, errorResponse{Detail: "session not found"})
+			return
+		}
+
+		writeChatJSON(w, http.StatusOK, map[string]string{"session_id": sessionID, "provider": strings.TrimSpace(req.Provider)})
+	}
+}
+
+func NewChatProxyHandler(cfg *config.Config, store *chatSessionStore) http.HandlerFunc {
+	pythonClient := newPythonRAGClient(cfg)
+	goClient := newGoRAGClient(cfg)
+	runtimeName := strings.ToLower(strings.TrimSpace(cfg.ChatRAGRuntime))
+	if runtimeName != "go" {
+		runtimeName = "python"
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		EnableCors(&w)
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req legacyChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeChatJSON(w, http.StatusBadRequest, errorResponse{Detail: "invalid request body"})
+			return
+		}
+
+		if strings.TrimSpace(req.Query) == "" {
+			writeChatJSON(w, http.StatusBadRequest, errorResponse{Detail: "query is required"})
+			return
+		}
+		if strings.TrimSpace(req.Model) != "" && strings.TrimSpace(req.Model) != "insurance" {
+			writeChatJSON(w, http.StatusBadRequest, errorResponse{Detail: "only insurance model is currently supported"})
+			return
+		}
+		if strings.TrimSpace(req.Tool) != "" && strings.TrimSpace(req.Tool) != "general_assistant" {
+			writeChatJSON(w, http.StatusBadRequest, errorResponse{Detail: "medical tool flow is not currently supported by this proxy"})
+			return
+		}
+
+		provider := strings.TrimSpace(req.Provider)
+		if provider == "" && strings.TrimSpace(req.SessionID) != "" {
+			provider = store.provider(strings.TrimSpace(req.SessionID))
+		}
+
+		var answer string
+		var sources []string
+		var err error
+		if runtimeName == "go" {
+			answer, sources, err = goClient.queryInsurance(req.Query, provider)
+		} else {
+			answer, sources, err = pythonClient.queryInsurance(req.Query, provider)
+		}
+		if err != nil {
+			status := http.StatusBadGateway
+			if errors.Is(err, errInvalidProvider) {
+				status = http.StatusBadRequest
+			}
+			writeChatJSON(w, status, errorResponse{Detail: err.Error()})
+			return
+		}
+
+		writeChatJSON(w, http.StatusOK, legacyChatResponse{
+			Answer:         answer,
+			Sources:        sources,
+			ActiveProvider: provider,
+			SessionID:      strings.TrimSpace(req.SessionID),
+		})
+	}
+}
+
+var errInvalidProvider = errors.New("python rag rejected provider")
+
+func (c *pythonRAGClient) queryInsurance(question, provider string) (string, []string, error) {
+	params := url.Values{}
+	params.Set("q", question)
+	params.Set("max_sources", "3")
+	if provider != "" {
+		params.Set("provider", provider)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, c.baseURL+"/query?"+params.Encode(), nil)
+	if err != nil {
+		return "", nil, err
+	}
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return "", nil, fmt.Errorf("python rag service unavailable: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", nil, err
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if strings.Contains(string(respBody), "invalid_provider") {
+			return "", nil, errInvalidProvider
+		}
+		message := strings.TrimSpace(string(respBody))
+		if message == "" {
+			message = fmt.Sprintf("python rag returned HTTP %d", resp.StatusCode)
+		}
+		return "", nil, errors.New(message)
+	}
+
+	var parsed pythonQueryResponse
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		return "", nil, fmt.Errorf("invalid python rag response: %w", err)
+	}
+
+	sources := make([]string, 0, len(parsed.Sources))
+	for _, item := range parsed.Sources {
+		source := strings.TrimSpace(item.SourceName)
+		if clause := strings.TrimSpace(item.Clauses); clause != "" {
+			source = strings.TrimSpace(source + " " + clause)
+		}
+		if section := strings.TrimSpace(item.Section); section != "" {
+			source = strings.TrimSpace(source + " - " + section)
+		}
+		if source == "" {
+			source = strings.TrimSpace(item.Snippet)
+		}
+		if source != "" {
+			sources = append(sources, source)
+		}
+	}
+
+	return strings.TrimSpace(parsed.Answer), sources, nil
+}
+
+func (c *goRAGClient) queryInsurance(question, provider string) (string, []string, error) {
+	params := url.Values{}
+	params.Set("q", question)
+	params.Set("max_sources", "3")
+	if provider != "" {
+		params.Set("provider", provider)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, c.baseURL+"/query?"+params.Encode(), nil)
+	if err != nil {
+		return "", nil, err
+	}
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return "", nil, fmt.Errorf("go rag service unavailable: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", nil, err
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if strings.Contains(string(respBody), "invalid_provider") {
+			return "", nil, errInvalidProvider
+		}
+		message := strings.TrimSpace(string(respBody))
+		if message == "" {
+			message = fmt.Sprintf("go rag returned HTTP %d", resp.StatusCode)
+		}
+		return "", nil, errors.New(message)
+	}
+
+	var parsed goQueryResponse
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		return "", nil, fmt.Errorf("invalid go rag response: %w", err)
+	}
+
+	sources := make([]string, 0, len(parsed.Sources))
+	for _, item := range parsed.Sources {
+		source := strings.TrimSpace(item.SourceName)
+		if clause := strings.TrimSpace(item.Clauses); clause != "" {
+			source = strings.TrimSpace(source + " " + clause)
+		}
+		if section := strings.TrimSpace(item.Section); section != "" {
+			source = strings.TrimSpace(source + " - " + section)
+		}
+		if source == "" {
+			source = strings.TrimSpace(item.Snippet)
+		}
+		if source != "" {
+			sources = append(sources, source)
+		}
+	}
+
+	return strings.TrimSpace(parsed.Answer), sources, nil
+}
+
+func writeChatJSON(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(payload)
+}

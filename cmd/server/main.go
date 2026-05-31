@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -15,10 +14,8 @@ import (
 	"github.com/wangwuxing777/Pawrd_Backend/internal/config"
 	"github.com/wangwuxing777/Pawrd_Backend/internal/handlers"
 	"github.com/wangwuxing777/Pawrd_Backend/internal/models"
-	"github.com/wangwuxing777/Pawrd_Backend/internal/services/chat"
 	"github.com/wangwuxing777/Pawrd_Backend/internal/services/merchant"
 	"github.com/wangwuxing777/Pawrd_Backend/internal/services/places"
-	"github.com/wangwuxing777/Pawrd_Backend/internal/services/rag"
 )
 
 var port = "8000"
@@ -115,9 +112,6 @@ func main() {
 	merchantVaccinationClient := merchant.NewClient(cfg)
 	handlers.SetMirrorFreshnessWindow(bookingFreshnessWindowConfig())
 
-	// Initialize chat session store (30-minute TTL)
-	sessionStore := chat.NewSessionStore(30 * time.Minute)
-
 	// Parse flags for seeding DB
 	seedDB := flag.Bool("seed", false, "Seed the database with initial scenario data")
 	flag.Parse()
@@ -139,15 +133,6 @@ func main() {
 		return
 	}
 
-	ragClient := rag.NewClient(cfg, db)
-	if cfg.HKInsuranceRAGEnabled && cfg.HKInsuranceRAGRebuildOnStart {
-		if err := ragClient.Rebuild(context.Background()); err != nil {
-			log.Printf("HK insurance RAG rebuild on start failed: %v", err)
-		} else {
-			log.Printf("HK insurance RAG rebuild on start completed")
-		}
-	}
-
 	// Initialize new Gin router for scenarios API
 	insuranceV1Router := handlers.NewInsuranceV1Handler(db)
 
@@ -165,6 +150,7 @@ func main() {
 	}
 	mux.HandleFunc("/media/upload", handlers.NewMediaUploadHandler(publicBaseURL))
 	mux.Handle("/uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir(uploadsDir))))
+	mux.HandleFunc("/rag-test", handlers.NewRAGTestPageHandler())
 
 	// One-time migration: generate thumbnails for existing images
 	MigrateImageThumbnails(db, publicBaseURL)
@@ -221,15 +207,17 @@ func main() {
 	mux.HandleFunc("/insurance-providers", handlers.InsuranceProvidersHandler)
 	mux.HandleFunc("/service-subcategories", handlers.ServiceSubcategoriesHandler)
 
-	// Legacy RAG chat handler (now with session support)
-	mux.HandleFunc("/api/chat", handlers.NewRAGHandler(ragClient, sessionStore))
+	// Chat compatibility proxy to the Python insurance RAG service.
+	chatStore := handlers.NewChatSessionStore()
+	mux.HandleFunc("/api/chat", handlers.NewChatProxyHandler(cfg, chatStore))
+	mux.HandleFunc("/api/chat/session", handlers.NewChatSessionHandler(chatStore))
+	mux.HandleFunc("/api/chat/session/{sessionID}/provider", handlers.NewChatSessionProviderHandler(chatStore))
 
-	// New chat session endpoints
-	mux.HandleFunc("/rag-test", handlers.NewRAGTestPageHandler())
-	mux.HandleFunc("/api/chat/session", handlers.NewChatSessionHandler(sessionStore))
-	mux.HandleFunc("/api/chat/session/", handlers.NewChatSelectProviderHandler(sessionStore)) // matches /api/chat/session/{id}/provider
-	mux.HandleFunc("/api/chat/providers", handlers.NewChatProvidersHandler(ragClient))
-	mux.HandleFunc("/api/chat/ask", handlers.NewChatAskHandler(sessionStore, ragClient))
+	// Go direct-translation RAG shadow endpoints (parity migration track).
+	mux.HandleFunc("/api/rag/go/query", handlers.NewGoRAGQueryHandler())
+	mux.HandleFunc("/api/rag/go/capabilities", handlers.NewGoRAGCapabilitiesHandler())
+	mux.HandleFunc("/api/rag/go/healthz", handlers.NewGoRAGHealthzHandler())
+	mux.HandleFunc("/api/rag/go/readyz", handlers.NewGoRAGReadyzHandler())
 
 	// Vets handler
 	placesClient := places.NewClient(cfg.MapsAPIKey)
@@ -288,11 +276,6 @@ func main() {
 	startBookingReconcileLoop(port)
 
 	fmt.Printf("PetWell Backend running at http://localhost:%s\n", port)
-	fmt.Println("Chat endpoints:")
-	fmt.Println("  POST /api/chat/session          - Create session")
-	fmt.Println("  POST /api/chat/session/{id}/provider - Select provider")
-	fmt.Println("  GET  /api/chat/providers         - List providers")
-	fmt.Println("  POST /api/chat/ask               - Ask with context")
 
 	err = http.ListenAndServe(":"+port, mux)
 	if err != nil {

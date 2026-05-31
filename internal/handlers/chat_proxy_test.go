@@ -1,0 +1,281 @@
+package handlers
+
+import (
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"testing"
+
+	"github.com/wangwuxing777/Pawrd_Backend/internal/config"
+)
+
+func TestChatProxyDefaultsToPythonRuntime(t *testing.T) {
+	pythonUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/query" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("provider"); got != "bluecross" {
+			t.Fatalf("expected provider=bluecross, got %q", got)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"answer": "python answer",
+			"sources": []map[string]any{
+				{
+					"source_name":  "p.md",
+					"clauses":      "1.C",
+					"section_path": "Benefits > Consult",
+				},
+			},
+		})
+	}))
+	defer pythonUpstream.Close()
+
+	cfg := &config.Config{
+		PythonRAGBaseURL:        pythonUpstream.URL,
+		PythonRAGTimeoutSeconds: 5,
+		GoRAGBaseURL:            "http://127.0.0.1:9",
+		GoRAGTimeoutSeconds:     5,
+		ChatRAGRuntime:          "",
+	}
+	store := NewChatSessionStore()
+	handler := NewChatProxyHandler(cfg, store)
+
+	body := `{"query":"Blue Cross 包唔包獸醫診症？","model":"insurance","provider":"bluecross"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	handler(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status=200 got=%d body=%s", rr.Code, rr.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if strings.TrimSpace(stringValueFromAny(resp["answer"])) != "python answer" {
+		t.Fatalf("unexpected answer: %#v", resp["answer"])
+	}
+	sources, _ := resp["sources"].([]any)
+	if len(sources) != 1 {
+		t.Fatalf("expected 1 source got %d", len(sources))
+	}
+}
+
+func TestChatProxyUsesGoRuntimeWhenConfigured(t *testing.T) {
+	goUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/query" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("provider"); got != "prudential" {
+			t.Fatalf("expected provider=prudential, got %q", got)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"answer": "go answer",
+			"sources": []map[string]any{
+				{
+					"source_name":  "g.md",
+					"clauses":      "1.B",
+					"section_path": "Benefits > Room and Board",
+				},
+				{
+					"snippet": "fallback snippet source",
+				},
+			},
+		})
+	}))
+	defer goUpstream.Close()
+
+	cfg := &config.Config{
+		PythonRAGBaseURL:        "http://127.0.0.1:9",
+		PythonRAGTimeoutSeconds: 5,
+		GoRAGBaseURL:            goUpstream.URL,
+		GoRAGTimeoutSeconds:     5,
+		ChatRAGRuntime:          "go",
+	}
+	store := NewChatSessionStore()
+	handler := NewChatProxyHandler(cfg, store)
+
+	body := `{"query":"What is the annual limit?","model":"insurance","provider":"prudential"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	handler(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status=200 got=%d body=%s", rr.Code, rr.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if strings.TrimSpace(stringValueFromAny(resp["answer"])) != "go answer" {
+		t.Fatalf("unexpected answer: %#v", resp["answer"])
+	}
+	sources, _ := resp["sources"].([]any)
+	if len(sources) != 2 {
+		t.Fatalf("expected 2 sources got %d", len(sources))
+	}
+}
+
+func TestChatProxyUsesSessionProviderFallback(t *testing.T) {
+	var capturedProvider string
+	pythonUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedProvider = r.URL.Query().Get("provider")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"answer":  "ok",
+			"sources": []map[string]any{},
+		})
+	}))
+	defer pythonUpstream.Close()
+
+	cfg := &config.Config{
+		PythonRAGBaseURL:        pythonUpstream.URL,
+		PythonRAGTimeoutSeconds: 5,
+		GoRAGBaseURL:            "http://127.0.0.1:9",
+		GoRAGTimeoutSeconds:     5,
+		ChatRAGRuntime:          "python",
+	}
+	store := NewChatSessionStore()
+	handler := NewChatProxyHandler(cfg, store)
+
+	sessionID := store.create()
+	if !store.setProvider(sessionID, "msig") {
+		t.Fatalf("failed to set provider in session")
+	}
+
+	body := `{"query":"foo","model":"insurance","session_id":"` + sessionID + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	handler(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status=200 got=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if capturedProvider != "msig" {
+		t.Fatalf("expected fallback provider msig got %q", capturedProvider)
+	}
+}
+
+func TestChatProxyInvalidProviderMapsToBadRequest(t *testing.T) {
+	goUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":"invalid_provider"}`, http.StatusBadRequest)
+	}))
+	defer goUpstream.Close()
+
+	cfg := &config.Config{
+		PythonRAGBaseURL:        "http://127.0.0.1:9",
+		PythonRAGTimeoutSeconds: 5,
+		GoRAGBaseURL:            goUpstream.URL,
+		GoRAGTimeoutSeconds:     5,
+		ChatRAGRuntime:          "go",
+	}
+	store := NewChatSessionStore()
+	handler := NewChatProxyHandler(cfg, store)
+
+	body := `{"query":"foo","model":"insurance","provider":"unknown"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	handler(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected status=400 got=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestGoRAGClientFormatsSources(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"answer": "answer",
+			"sources": []map[string]any{
+				{
+					"source_name":  "a.md",
+					"clauses":      "1.A",
+					"section_path": "Benefits > A",
+				},
+				{
+					"snippet": "just snippet",
+				},
+			},
+		})
+	}))
+	defer upstream.Close()
+
+	client := &goRAGClient{
+		baseURL: upstream.URL,
+		client:  upstream.Client(),
+	}
+	answer, sources, err := client.queryInsurance("q", "prudential")
+	if err != nil {
+		t.Fatalf("queryInsurance: %v", err)
+	}
+	if answer != "answer" {
+		t.Fatalf("unexpected answer: %q", answer)
+	}
+	if len(sources) != 2 {
+		t.Fatalf("expected 2 sources got %d", len(sources))
+	}
+	if !strings.Contains(sources[0], "a.md 1.A - Benefits > A") {
+		t.Fatalf("unexpected source format: %q", sources[0])
+	}
+	if strings.TrimSpace(sources[1]) != "just snippet" {
+		t.Fatalf("unexpected fallback source: %q", sources[1])
+	}
+}
+
+func TestPythonClientEncodesQueryParameters(t *testing.T) {
+	var captured url.Values
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured = r.URL.Query()
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"answer":  "ok",
+			"sources": []map[string]any{},
+		})
+	}))
+	defer upstream.Close()
+
+	client := &pythonRAGClient{
+		baseURL: upstream.URL,
+		client:  upstream.Client(),
+	}
+	_, _, err := client.queryInsurance("x y", "bluecross")
+	if err != nil {
+		t.Fatalf("queryInsurance: %v", err)
+	}
+	if captured.Get("q") != "x y" {
+		t.Fatalf("expected q preserved, got %q", captured.Get("q"))
+	}
+	if captured.Get("provider") != "bluecross" {
+		t.Fatalf("expected provider bluecross got %q", captured.Get("provider"))
+	}
+	if captured.Get("max_sources") != "3" {
+		t.Fatalf("expected max_sources=3 got %q", captured.Get("max_sources"))
+	}
+}
+
+func TestWriteChatJSON(t *testing.T) {
+	rr := httptest.NewRecorder()
+	writeChatJSON(rr, http.StatusAccepted, map[string]string{"x": "y"})
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("expected status=202 got=%d", rr.Code)
+	}
+	body, err := io.ReadAll(rr.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if !strings.Contains(string(body), `"x":"y"`) {
+		t.Fatalf("unexpected json body: %s", string(body))
+	}
+}
+
+func stringValueFromAny(v any) string {
+	s, _ := v.(string)
+	return s
+}
