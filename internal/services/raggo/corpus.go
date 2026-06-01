@@ -2,12 +2,15 @@ package raggo
 
 import (
 	"bufio"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+
+	_ "github.com/mattn/go-sqlite3"
 )
 
 type Chunk struct {
@@ -33,7 +36,179 @@ func LoadChunks(cfg Config) ([]Chunk, error) {
 		}
 		chunks = append(chunks, fileChunks...)
 	}
+	structuredChunks, err := loadStructuredInsuranceChunks(cfg)
+	if err != nil {
+		return nil, err
+	}
+	chunks = append(chunks, structuredChunks...)
 	return chunks, nil
+}
+
+func loadStructuredInsuranceChunks(cfg Config) ([]Chunk, error) {
+	dbPath := filepath.Join(detectProjectRoot(), "assets", "pet_insurance.db")
+	if _, err := os.Stat(dbPath); err != nil {
+		return nil, nil
+	}
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+
+	providerByID := map[int]string{}
+	rows, err := db.Query(`SELECT company_id, company_name FROM insurance_provider`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var id int
+		var name string
+		if err := rows.Scan(&id, &name); err == nil {
+			providerByID[id] = normalizeProviderName(name)
+		}
+	}
+	rows.Close()
+
+	chunks := make([]Chunk, 0, 256)
+
+	productRows, err := db.Query(`
+		SELECT insurance_id, provider_id, insurance_name, insurance_name_zh, waiting_period, waiting_period_zh
+		FROM product
+	`)
+	if err != nil {
+		return nil, err
+	}
+	for productRows.Next() {
+		var insuranceID, providerID int
+		var insuranceName, insuranceNameZh string
+		var waitingPeriod, waitingPeriodZh sql.NullString
+		if err := productRows.Scan(&insuranceID, &providerID, &insuranceName, &insuranceNameZh, &waitingPeriod, &waitingPeriodZh); err != nil {
+			continue
+		}
+		provider := providerByID[providerID]
+		if !contains(SupportedProviders, provider) {
+			continue
+		}
+		if strings.TrimSpace(waitingPeriod.String) != "" {
+			chunks = append(chunks, buildStructuredChunk(
+				provider, "en", insuranceName, "structured_product_waiting_period",
+				"Structured Product Data > Waiting Period",
+				strconv.Itoa(insuranceID),
+				"structured_product,waiting_period,limit",
+				insuranceName+": waiting period "+strings.TrimSpace(waitingPeriod.String),
+			))
+		}
+		if strings.TrimSpace(waitingPeriodZh.String) != "" {
+			productTitle := insuranceNameZh
+			if strings.TrimSpace(productTitle) == "" {
+				productTitle = insuranceName
+			}
+			chunks = append(chunks, buildStructuredChunk(
+				provider, "zh", productTitle, "structured_product_waiting_period",
+				"Structured Product Data > 等候期",
+				strconv.Itoa(insuranceID),
+				"structured_product,waiting_period,limit",
+				productTitle+"：等候期 "+strings.TrimSpace(waitingPeriodZh.String),
+			))
+		}
+	}
+	productRows.Close()
+
+	limitRows, err := db.Query(`
+		SELECT p.insurance_id, p.insurance_name, p.insurance_name_zh, p.provider_id,
+		       s.parent_coverage_id, s.sub_coverage_name, s.sub_coverage_name_zh,
+		       s.sub_limit, s.sub_coverage_remark, s.sub_coverage_remark_zh
+		FROM sub_coverage_limit s
+		JOIN product p ON p.insurance_id = s.product_id
+	`)
+	if err != nil {
+		return nil, err
+	}
+	for limitRows.Next() {
+		var insuranceID, providerID, parentCoverageID int
+		var insuranceName, insuranceNameZh string
+		var subName, subNameZh, subLimit string
+		var remark, remarkZh sql.NullString
+		if err := limitRows.Scan(&insuranceID, &insuranceName, &insuranceNameZh, &providerID, &parentCoverageID, &subName, &subNameZh, &subLimit, &remark, &remarkZh); err != nil {
+			continue
+		}
+		provider := providerByID[providerID]
+		if !contains(SupportedProviders, provider) {
+			continue
+		}
+		if strings.TrimSpace(subName) != "" {
+			text := buildStructuredLimitText(insuranceName, subName, subLimit, remark.String)
+			chunks = append(chunks, buildStructuredChunk(
+				provider, "en", insuranceName, "structured_sub_coverage_limit",
+				"Structured Product Data > Coverage Limits > "+subName,
+				strconv.Itoa(parentCoverageID),
+				"structured_product,limit,benefit",
+				text,
+			))
+		}
+		if strings.TrimSpace(subNameZh) != "" {
+			productTitle := insuranceNameZh
+			if strings.TrimSpace(productTitle) == "" {
+				productTitle = insuranceName
+			}
+			text := buildStructuredLimitText(productTitle, subNameZh, subLimit, remarkZh.String)
+			chunks = append(chunks, buildStructuredChunk(
+				provider, "zh", productTitle, "structured_sub_coverage_limit",
+				"Structured Product Data > 保障限額 > "+subNameZh,
+				strconv.Itoa(parentCoverageID),
+				"structured_product,limit,benefit",
+				text,
+			))
+		}
+	}
+	limitRows.Close()
+
+	return chunks, nil
+}
+
+func buildStructuredChunk(provider, language, product, sourceName, sectionPath, clause, topicTags, text string) Chunk {
+	return Chunk{
+		Text: strings.TrimSpace(text),
+		Metadata: map[string]string{
+			"provider":     provider,
+			"source_name":  sourceName,
+			"source_path":  "assets/pet_insurance.db",
+			"language":     language,
+			"product":      product,
+			"policy_type":  "pet_insurance",
+			"section_path": sectionPath,
+			"clauses":      clause,
+			"unit_types":   "structured_limit",
+			"topic_tags":   topicTags,
+		},
+	}
+}
+
+func buildStructuredLimitText(product, subName, subLimit, remark string) string {
+	parts := []string{strings.TrimSpace(product), strings.TrimSpace(subName)}
+	if strings.TrimSpace(subLimit) != "" {
+		parts = append(parts, "limit "+strings.TrimSpace(subLimit))
+	}
+	if strings.TrimSpace(remark) != "" {
+		parts = append(parts, strings.TrimSpace(remark))
+	}
+	return strings.Join(parts, ": ")
+}
+
+func normalizeProviderName(name string) string {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	switch {
+	case strings.Contains(lower, "one degree"):
+		return "one_degree"
+	case strings.Contains(lower, "blue cross"):
+		return "bluecross"
+	case strings.Contains(lower, "prudential"):
+		return "prudential"
+	case strings.Contains(lower, "msig"):
+		return "msig"
+	default:
+		return strings.ReplaceAll(lower, " ", "_")
+	}
 }
 
 func markdownFiles(root string) ([]string, error) {
