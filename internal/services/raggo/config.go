@@ -12,6 +12,10 @@ type Config struct {
 	PersistDir        string
 	DefaultMaxSources int
 	MaxAllowedSources int
+	LLMBaseURL        string
+	LLMModel          string
+	LLMAPIKey         string
+	LLMTimeoutSeconds int
 }
 
 func LoadConfig() Config {
@@ -49,6 +53,10 @@ func LoadConfig() Config {
 		PersistDir:        persistDir,
 		DefaultMaxSources: maxSources,
 		MaxAllowedSources: maxSources,
+		LLMBaseURL:        strings.TrimSpace(os.Getenv("HK_INSURANCE_RAG_LLM_BASE_URL")),
+		LLMModel:          strings.TrimSpace(os.Getenv("HK_INSURANCE_RAG_LLM_MODEL")),
+		LLMAPIKey:         strings.TrimSpace(os.Getenv("HK_INSURANCE_RAG_LLM_API_KEY")),
+		LLMTimeoutSeconds: envInt("HK_INSURANCE_RAG_LLM_TIMEOUT_SECONDS", 45),
 	}
 }
 

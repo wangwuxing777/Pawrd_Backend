@@ -1,6 +1,9 @@
 package raggo
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,123 +35,82 @@ func TestValidateMaxSources(t *testing.T) {
 	}
 }
 
-func TestBuildDeterministicAnswer_WaitingPeriod(t *testing.T) {
-	sources := []Source{
-		{
-			SourceName: "sample.md",
-			Provider:   "prudential",
-			Snippet:    "Waiting Period\nCancer: 180 days\nIllness: 30 days\nInjury: 7 days",
-		},
-	}
-	intent := detectQueryIntent("What is the waiting period?", "")
-	answer, mode, payload := buildDeterministicAnswer(intent, sources)
-	if mode == "" || answer == "" {
-		t.Fatalf("expected deterministic waiting period answer, got mode=%s answer=%q", mode, answer)
-	}
-	if mode != "deterministic_waiting_period_single" {
-		t.Fatalf("expected waiting mode, got %s", mode)
-	}
-	if payload["type"] != "waiting_period_single" {
-		t.Fatalf("expected waiting payload type, got %#v", payload["type"])
-	}
-}
-
-func TestBuildDeterministicAnswer_WaitingPeriodDefinitionUsesEvidence(t *testing.T) {
-	sources := []Source{
-		{
-			SourceName: "prudential.md",
-			Provider:   "prudential",
-			Clauses:    "4.1",
-			Snippet:    "Waiting Period\nCancer: 180 days\nIllness: 30 days\nInjury: 7 days",
-		},
-		{
-			SourceName: "msig.md",
-			Provider:   "msig",
-			Clauses:    "2.3",
-			Snippet:    "Waiting Period\nIllness: 90 days\nInjury: 0 days",
-		},
-	}
-
-	intent := detectQueryIntent("What does waiting period mean?", "")
-	answer, mode, payload := buildDeterministicAnswer(intent, sources)
-	if mode != "deterministic_waiting_period_single" {
-		t.Fatalf("expected waiting definition mode, got mode=%s answer=%q", mode, answer)
-	}
-	if !strings.Contains(answer, "time that must pass before the listed condition can be claimed") {
-		t.Fatalf("expected evidence-based definition lead, got %q", answer)
-	}
-	if !strings.Contains(answer, "Prudential: illness claims start after 30 days, cancer claims start after 180 days, injury claims start after 7 days") {
-		t.Fatalf("expected Prudential evidence summary, got %q", answer)
-	}
-	if !strings.Contains(answer, "MSIG: illness claims start after 90 days, injury claims start after 0 days") {
-		t.Fatalf("expected MSIG evidence summary, got %q", answer)
-	}
-	if payload["type"] != "waiting_period_single" {
-		t.Fatalf("expected waiting payload type, got %#v", payload["type"])
-	}
-}
-
-func TestBuildDeterministicAnswer_WaitingPeriodDefinitionSingleProviderUsesEvidence(t *testing.T) {
-	sources := []Source{
-		{
-			SourceName: "bluecross.md",
-			Provider:   "bluecross",
-			Clauses:    "27",
-			Snippet:    "Waiting Period\nIllness: 90 days",
-		},
-	}
-
-	intent := detectQueryIntent("What is the meaning of waiting period?", "")
-	answer, mode, _ := buildDeterministicAnswer(intent, sources)
-	if mode != "deterministic_waiting_period_single" {
-		t.Fatalf("expected waiting definition mode, got mode=%s answer=%q", mode, answer)
-	}
-	if !strings.Contains(answer, "time that must pass before the listed condition can be claimed") {
-		t.Fatalf("expected evidence-based definition lead, got %q", answer)
-	}
-	if !strings.Contains(answer, "Blue Cross: illness claims start after 90 days") {
-		t.Fatalf("expected provider evidence summary, got %q", answer)
-	}
-}
-
-func TestBuildDeterministicAnswer_ConsultLimit(t *testing.T) {
-	sources := []Source{
-		{
-			Provider:   "prudential",
-			SourceName: "sample.md",
-			Clauses:    "1.C",
-			TopicTags:  "consult, limit",
-			Snippet:    "Plan A: HK$8,000 per year (HK$400 per visit). Plan B: HK$16,000 per year (HK$800 per visit).",
-		},
-	}
-	intent := detectQueryIntent("Prudential consultation limit?", "prudential")
-	answer, mode, payload := buildDeterministicAnswer(intent, sources)
-	if mode != "deterministic_consult_limit_single" {
-		t.Fatalf("expected consult limit mode, got mode=%s answer=%q", mode, answer)
-	}
-	if payload["type"] != "consult_limit_single" {
-		t.Fatalf("expected consult_limit_single type, got %#v", payload["type"])
-	}
-}
-
-func TestBuildDeterministicAnswer_BenefitLimit(t *testing.T) {
+func TestBuildExtractiveFallback(t *testing.T) {
 	sources := []Source{
 		{
 			Provider:    "prudential",
 			SourceName:  "sample.md",
-			Clauses:     "1.B",
-			TopicTags:   "limit, benefit",
-			SectionPath: "Benefits > Room and Board",
-			Snippet:     "Plan A: HK$3,500 per year (HK$250 per day). Plan B: HK$7,000 per year (HK$500 per day).",
+			Clauses:     "1.C",
+			SectionPath: "Benefits > Waiting Period",
+			Snippet:     "Waiting period means claims can only start after the listed number of days.",
 		},
 	}
-	intent := detectQueryIntent("What is the room and board annual limit?", "prudential")
-	answer, mode, payload := buildDeterministicAnswer(intent, sources)
-	if mode != "deterministic_benefit_limit_single" {
-		t.Fatalf("expected benefit limit mode, got mode=%s answer=%q", mode, answer)
+
+	answer := buildExtractiveFallback("what does waiting period mean", "prudential", sources)
+	if !strings.Contains(answer, "sample.md") {
+		t.Fatalf("expected source name in fallback answer, got %q", answer)
 	}
-	if payload["type"] != "benefit_limit_single" {
-		t.Fatalf("expected benefit_limit_single type, got %#v", payload["type"])
+	if !strings.Contains(answer, "Waiting period means claims can only start") {
+		t.Fatalf("expected snippet in fallback answer, got %q", answer)
+	}
+}
+
+func TestAnswerQueryFallsBackToExtractiveSummaryWhenLLMDisabled(t *testing.T) {
+	cfg := LoadConfig()
+	cfg.LLMBaseURL = ""
+	cfg.LLMModel = ""
+	cfg.LLMAPIKey = ""
+
+	result := AnswerQuery(cfg, "What is the meaning of waiting period?", "", "", 3)
+	if result.AnswerMode != "go_rag_source_summary_fallback" {
+		t.Fatalf("expected extractive fallback mode, got %s answer=%q", result.AnswerMode, result.Answer)
+	}
+	if len(result.Sources) == 0 {
+		t.Fatalf("expected retrieved sources")
+	}
+	if !strings.Contains(result.Answer, "retrieved policy snippets") {
+		t.Fatalf("expected fallback framing, got %q", result.Answer)
+	}
+}
+
+func TestAnswerQueryUsesLLMSummaryWhenConfigured(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode summarizer request: %v", err)
+		}
+		messages, _ := payload["messages"].([]any)
+		if len(messages) < 2 {
+			t.Fatalf("expected chat messages, got %#v", payload)
+		}
+		msgMap, _ := messages[1].(map[string]any)
+		content, _ := msgMap["content"].(string)
+		if !strings.Contains(content, "Evidence snippets") {
+			t.Fatalf("expected evidence prompt, got %q", content)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]any{"content": "LLM grounded summary"},
+			}},
+		})
+	}))
+	defer server.Close()
+
+	cfg := LoadConfig()
+	cfg.LLMBaseURL = server.URL
+	cfg.LLMModel = "test-model"
+	cfg.LLMAPIKey = "test-key"
+	cfg.LLMTimeoutSeconds = 5
+
+	result := AnswerQuery(cfg, "What is the meaning of waiting period?", "", "", 3)
+	if result.AnswerMode != "go_rag_llm_summary" {
+		t.Fatalf("expected llm summary mode, got %s answer=%q", result.AnswerMode, result.Answer)
+	}
+	if strings.TrimSpace(result.Answer) != "LLM grounded summary" {
+		t.Fatalf("unexpected llm answer: %q", result.Answer)
+	}
+	if len(result.Sources) == 0 {
+		t.Fatalf("expected retrieved sources")
 	}
 }
 

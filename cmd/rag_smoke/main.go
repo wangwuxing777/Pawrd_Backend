@@ -12,11 +12,11 @@ import (
 )
 
 type smokeCase struct {
-	Name         string
-	Question     string
-	Provider     string
-	Language     string
-	ExpectedMode string
+	Name          string
+	Question      string
+	Provider      string
+	Language      string
+	ExpectedModes []string
 }
 
 type smokeResult struct {
@@ -29,28 +29,28 @@ func main() {
 	goBase := getenv("GO_RAG_URL", "http://127.0.0.1:8012/api/rag/go/query")
 	cases := []smokeCase{
 		{
-			Name:         "prudential_room_and_board_limit",
-			Question:     "What is the annual limit for Prudential room and board?",
-			Provider:     "prudential",
-			Language:     "en",
-			ExpectedMode: "deterministic_benefit_limit_single",
+			Name:          "prudential_room_and_board_limit",
+			Question:      "What is the annual limit for Prudential room and board?",
+			Provider:      "prudential",
+			Language:      "en",
+			ExpectedModes: []string{"go_rag_llm_summary", "go_rag_source_summary_fallback"},
 		},
 		{
-			Name:         "bluecross_consult_coverage_zh",
-			Question:     "Blue Cross 包唔包獸醫診症？",
-			Provider:     "bluecross",
-			Language:     "zh",
-			ExpectedMode: "deterministic_consult_coverage_single",
+			Name:          "bluecross_consult_coverage_zh",
+			Question:      "Blue Cross 包唔包獸醫診症？",
+			Provider:      "bluecross",
+			Language:      "zh",
+			ExpectedModes: []string{"go_rag_llm_summary", "go_rag_source_summary_fallback"},
 		},
 		{
-			Name:         "bluecross_vs_prudential_consult_limit",
-			Question:     "Compare Blue Cross and Prudential veterinary consultation limits.",
-			ExpectedMode: "deterministic_consult_limit_comparison",
+			Name:          "bluecross_vs_prudential_consult_limit",
+			Question:      "Compare Blue Cross and Prudential veterinary consultation limits.",
+			ExpectedModes: []string{"go_rag_llm_summary", "go_rag_source_summary_fallback"},
 		},
 		{
-			Name:         "waiting_period_meaning",
-			Question:     "What is the meaning of waiting period?",
-			ExpectedMode: "deterministic_waiting_period_single",
+			Name:          "waiting_period_meaning",
+			Question:      "What is the meaning of waiting period?",
+			ExpectedModes: []string{"go_rag_llm_summary", "go_rag_source_summary_fallback"},
 		},
 	}
 
@@ -68,7 +68,7 @@ func main() {
 		}
 
 		pass := strings.TrimSpace(res.Answer) != "" &&
-			res.AnswerMode == c.ExpectedMode &&
+			contains(c.ExpectedModes, res.AnswerMode) &&
 			res.Sources > 0
 		if !pass {
 			failed = true
@@ -79,10 +79,10 @@ func main() {
 			status = "FAIL"
 		}
 		fmt.Printf("[%s] %s\n", status, c.Name)
-		fmt.Printf("  expected_mode: %s\n", c.ExpectedMode)
-		fmt.Printf("  actual_mode:   %s\n", res.AnswerMode)
-		fmt.Printf("  sources:       %d\n", res.Sources)
-		fmt.Printf("  answer:        %s\n\n", oneLine(res.Answer))
+		fmt.Printf("  expected_modes: %s\n", strings.Join(c.ExpectedModes, ", "))
+		fmt.Printf("  actual_mode:    %s\n", res.AnswerMode)
+		fmt.Printf("  sources:        %d\n", res.Sources)
+		fmt.Printf("  answer:         %s\n\n", oneLine(res.Answer))
 	}
 
 	if failed {
@@ -159,4 +159,13 @@ func getenv(name, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func contains(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
 }

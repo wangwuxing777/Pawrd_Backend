@@ -20,6 +20,10 @@ type Config struct {
 	GoRAGBaseURL            string
 	PythonRAGTimeoutSeconds int
 	GoRAGTimeoutSeconds     int
+	RAGLLMBaseURL           string
+	RAGLLMModel             string
+	RAGLLMAPIKey            string
+	RAGLLMTimeoutSeconds    int
 	ChatRAGRuntime          string
 	MerchantFacadeBaseURL   string
 	MerchantFacadeAppKey    string
@@ -45,6 +49,10 @@ func LoadConfig() *Config {
 		GoRAGBaseURL:            strings.TrimSpace(getEnvOrDefault("GO_RAG_BASE_URL", "http://127.0.0.1:8012/api/rag/go")),
 		PythonRAGTimeoutSeconds: getEnvAsIntOrDefault("PYTHON_RAG_TIMEOUT_SECONDS", 90),
 		GoRAGTimeoutSeconds:     getEnvAsIntOrDefault("GO_RAG_TIMEOUT_SECONDS", 90),
+		RAGLLMBaseURL:           strings.TrimSpace(getEnvOrDefault("HK_INSURANCE_RAG_LLM_BASE_URL", "")),
+		RAGLLMModel:             strings.TrimSpace(getEnvOrDefault("HK_INSURANCE_RAG_LLM_MODEL", "")),
+		RAGLLMAPIKey:            strings.TrimSpace(os.Getenv("HK_INSURANCE_RAG_LLM_API_KEY")),
+		RAGLLMTimeoutSeconds:    getEnvAsIntOrDefault("HK_INSURANCE_RAG_LLM_TIMEOUT_SECONDS", 45),
 		ChatRAGRuntime:          strings.ToLower(strings.TrimSpace(getEnvOrDefault("CHAT_RAG_RUNTIME", "go"))),
 		MerchantFacadeBaseURL:   strings.TrimSpace(getEnvOrDefault("MERCHANT_FACADE_BASE_URL", "http://127.0.0.1:8090")),
 		MerchantFacadeAppKey:    strings.TrimSpace(os.Getenv("MERCHANT_FACADE_APP_KEY")),

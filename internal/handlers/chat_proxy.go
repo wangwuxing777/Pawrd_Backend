@@ -87,12 +87,17 @@ func newGoRAGClient(cfg *config.Config) *goRAGClient {
 	if timeout <= 0 {
 		timeout = 90 * time.Second
 	}
+	ragCfg := raggo.LoadConfig()
+	ragCfg.LLMBaseURL = cfg.RAGLLMBaseURL
+	ragCfg.LLMModel = cfg.RAGLLMModel
+	ragCfg.LLMAPIKey = cfg.RAGLLMAPIKey
+	ragCfg.LLMTimeoutSeconds = cfg.RAGLLMTimeoutSeconds
 	return &goRAGClient{
 		baseURL: strings.TrimRight(cfg.GoRAGBaseURL, "/"),
 		client: &http.Client{
 			Timeout: timeout,
 		},
-		cfg: raggo.LoadConfig(),
+		cfg: ragCfg,
 	}
 }
 
