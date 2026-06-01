@@ -243,13 +243,18 @@ func TestDetectQueryIntent(t *testing.T) {
 	if !intent.isComparison || intent.isDefinition {
 		t.Fatalf("unexpected comparison intent: %+v", intent)
 	}
+
+	intent = detectQueryIntent("What is Blue Cross waiting period?")
+	if !intent.isWaitingPeriodFocus {
+		t.Fatalf("expected waiting-period focus intent: %+v", intent)
+	}
 }
 
 func TestDiversifyCandidatesDefinitionPromotesDefinitionEvidence(t *testing.T) {
 	candidates := []rankedChunk{
 		{chunk: Chunk{Metadata: map[string]string{"unit_types": "benefit", "provider": "a", "section_path": "Benefits", "source_name": "benefit.md"}}, score: 10},
 		{chunk: Chunk{Metadata: map[string]string{"unit_types": "definition", "provider": "b", "section_path": "Definitions", "source_name": "definition.md"}}, score: 9},
-		{chunk: Chunk{Metadata: map[string]string{"unit_types": "waiting_period", "provider": "c", "section_path": "Structured Waiting", "source_name": "waiting.md"}}, score: 8},
+		{chunk: Chunk{Metadata: map[string]string{"unit_types": "waiting_period", "topic_tags": "structured_product,waiting_period,summary", "provider": "c", "section_path": "Structured Waiting", "source_name": "waiting.md"}}, score: 8},
 	}
 
 	got := diversifyCandidates(candidates, queryIntent{isDefinition: true})
@@ -259,8 +264,8 @@ func TestDiversifyCandidatesDefinitionPromotesDefinitionEvidence(t *testing.T) {
 	if got[0].chunk.Metadata["unit_types"] != "definition" {
 		t.Fatalf("expected definition first, got %s", got[0].chunk.Metadata["unit_types"])
 	}
-	if got[1].chunk.Metadata["unit_types"] != "waiting_period" {
-		t.Fatalf("expected waiting_period second, got %s", got[1].chunk.Metadata["unit_types"])
+	if !hasTopicTag(got[1].chunk.Metadata["topic_tags"], "summary") {
+		t.Fatalf("expected summary evidence second, got tags=%s", got[1].chunk.Metadata["topic_tags"])
 	}
 }
 

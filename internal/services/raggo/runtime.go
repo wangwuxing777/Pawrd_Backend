@@ -65,8 +65,9 @@ type reranker struct {
 var tokenSplitRe = regexp.MustCompile(`[^\p{L}\p{N}]+`)
 
 type queryIntent struct {
-	isDefinition bool
-	isComparison bool
+	isDefinition         bool
+	isComparison         bool
+	isWaitingPeriodFocus bool
 }
 
 func AnswerQuery(cfg Config, question, provider, language string, maxSources int) AnswerResult {
@@ -552,12 +553,18 @@ func metadataBonus(ch Chunk, tokens []string, intent queryIntent) float64 {
 	if unitTypes == "waiting_period" {
 		score += 0.2
 	}
+	if hasTopicTag(topicTags, "summary") {
+		score += 0.15
+	}
 	if intent.isDefinition {
 		if unitTypes == "definition" {
 			score += 3.5
 		}
 		if containsAny(topicTags, "waiting_period") {
 			score += 1.2
+		}
+		if hasTopicTag(topicTags, "summary") {
+			score += 1.6
 		}
 		if containsAny(sectionPath, "definitions", "definition", "定義", "釋義") {
 			score += 1.5
@@ -578,6 +585,14 @@ func metadataBonus(ch Chunk, tokens []string, intent queryIntent) float64 {
 			score -= 0.4
 		}
 	}
+	if intent.isWaitingPeriodFocus {
+		if containsAny(topicTags, "waiting_period") {
+			score += 0.8
+		}
+		if hasTopicTag(topicTags, "summary") {
+			score += 1.8
+		}
+	}
 	if intent.isComparison {
 		if unitTypes == "benefit" {
 			score += 0.3
@@ -585,36 +600,50 @@ func metadataBonus(ch Chunk, tokens []string, intent queryIntent) float64 {
 		if containsAny(topicTags, "limit") {
 			score += 0.4
 		}
+		if hasTopicTag(topicTags, "summary") {
+			score += 1.8
+		}
 	}
 	return score
 }
 
 func detectQueryIntent(question string) queryIntent {
 	lower := strings.ToLower(strings.TrimSpace(question))
+	waitingPeriodFocus := containsAny(lower, "waiting period", "等候期")
 	return queryIntent{
-		isDefinition: containsAny(lower,
+		isDefinition: (containsAny(lower,
 			"meaning of", "what is", "what does", "define", "definition",
 			"意思", "係咩", "是什么", "是什麼", "定義",
-		) && containsAny(lower, "waiting period", "等候期"),
-		isComparison: containsAny(lower, "compare", "comparison", "vs", "versus", "比較", "对比", "對比"),
+		) && waitingPeriodFocus) || (strings.HasPrefix(lower, "what is ") && waitingPeriodFocus),
+		isComparison:         containsAny(lower, "compare", "comparison", "vs", "versus", "比較", "对比", "對比"),
+		isWaitingPeriodFocus: waitingPeriodFocus,
 	}
 }
 
 func diversifyCandidates(candidates []rankedChunk, intent queryIntent) []rankedChunk {
-	if len(candidates) < 3 || (!intent.isDefinition && !intent.isComparison) {
+	if len(candidates) < 3 || (!intent.isDefinition && !intent.isComparison && !intent.isWaitingPeriodFocus) {
 		return candidates
 	}
 
 	out := make([]rankedChunk, 0, len(candidates))
 	used := make([]bool, len(candidates))
 
-	if intent.isDefinition {
-		for _, desiredUnit := range []string{"definition", "waiting_period"} {
+	if intent.isDefinition || intent.isWaitingPeriodFocus {
+		for _, want := range []struct {
+			unitType   string
+			requireTag string
+		}{
+			{unitType: "definition"},
+			{requireTag: "summary"},
+		} {
 			for i, candidate := range candidates {
 				if used[i] {
 					continue
 				}
-				if candidate.chunk.Metadata["unit_types"] != desiredUnit {
+				if want.unitType != "" && candidate.chunk.Metadata["unit_types"] != want.unitType {
+					continue
+				}
+				if want.requireTag != "" && !hasTopicTag(candidate.chunk.Metadata["topic_tags"], want.requireTag) {
 					continue
 				}
 				out = append(out, candidate)
@@ -683,13 +712,23 @@ func selectTopCandidates(candidates []rankedChunk, intent queryIntent, maxSource
 		seenSection[sectionKey] = true
 	}
 
-	if intent.isDefinition {
-		for _, desiredUnit := range []string{"definition", "waiting_period"} {
+	if intent.isDefinition || intent.isWaitingPeriodFocus {
+		for _, want := range []struct {
+			unitType   string
+			requireTag string
+		}{
+			{unitType: "definition"},
+			{requireTag: "summary"},
+			{unitType: "definition"},
+		} {
 			for i, candidate := range candidates {
 				if used[i] || len(selected) >= limit {
 					continue
 				}
-				if candidate.chunk.Metadata["unit_types"] != desiredUnit {
+				if want.unitType != "" && candidate.chunk.Metadata["unit_types"] != want.unitType {
+					continue
+				}
+				if want.requireTag != "" && !hasTopicTag(candidate.chunk.Metadata["topic_tags"], want.requireTag) {
 					continue
 				}
 				appendCandidate(i)
@@ -837,6 +876,15 @@ func valueOr(v, fallback string) string {
 func containsAny(s string, terms ...string) bool {
 	for _, term := range terms {
 		if strings.Contains(s, term) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasTopicTag(topicTags, target string) bool {
+	for _, tag := range strings.Split(topicTags, ",") {
+		if strings.TrimSpace(tag) == target {
 			return true
 		}
 	}
