@@ -528,7 +528,7 @@ func chunkMarkdownBody(body string, baseMeta map[string]string) []Chunk {
 			m["section_path"] = strings.Join(headingPath, " > ")
 			m["clauses"] = curAnchor["clause"]
 			m["unit_types"] = normalizeOptionalString(curAnchor["unit"])
-			m["topic_tags"] = inferTopicTags(part, m["unit_types"])
+			m["topic_tags"] = inferTopicTags(part, m["unit_types"], m["section_path"])
 			chunks = append(chunks, Chunk{
 				Text:     part,
 				Metadata: m,
@@ -564,13 +564,14 @@ func chunkMarkdownBody(body string, baseMeta map[string]string) []Chunk {
 	return chunks
 }
 
-func inferTopicTags(text, unitType string) string {
+func inferTopicTags(text, unitType, sectionPath string) string {
 	l := strings.ToLower(text)
+	sectionLower := strings.ToLower(sectionPath)
 	tags := make([]string, 0, 4)
 	if unitType != "" {
 		tags = append(tags, unitType)
 	}
-	if strings.Contains(l, "waiting period") || strings.Contains(l, "等候期") {
+	if isWaitingPeriodSection(sectionLower) || ((strings.Contains(l, "waiting period") || strings.Contains(l, "等候期")) && unitType == "waiting_period") {
 		tags = append(tags, "waiting_period")
 	}
 	if strings.Contains(l, "consult") || strings.Contains(l, "診症") {
@@ -589,6 +590,13 @@ func inferTopicTags(text, unitType string) string {
 		uniq = append(uniq, t)
 	}
 	return strings.Join(uniq, ", ")
+}
+
+func isWaitingPeriodSection(sectionLower string) bool {
+	return strings.Contains(sectionLower, "definition: waiting period") ||
+		strings.Contains(sectionLower, "定義：等候期") ||
+		strings.Contains(sectionLower, "waiting periods") ||
+		strings.Contains(sectionLower, "等候期")
 }
 
 func splitByBudget(text string, maxChars int) []string {
