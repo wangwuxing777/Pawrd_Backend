@@ -15,6 +15,16 @@ import (
 func TestChatProxyDefaultsToGoRuntime(t *testing.T) {
 	t.Setenv("HK_INSURANCE_RAG_DATA_PATH", "../../assets/rag_normalized/hk_insurance")
 	t.Setenv("HK_INSURANCE_RAG_MAX_SOURCES", "6")
+	t.Setenv("GO_RAG_INPROCESS_ENABLED", "true")
+
+	llmUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]any{"content": "go in-process answer"},
+			}},
+		})
+	}))
+	defer llmUpstream.Close()
 
 	cfg := &config.Config{
 		PythonRAGBaseURL:        "http://127.0.0.1:9",
@@ -22,6 +32,10 @@ func TestChatProxyDefaultsToGoRuntime(t *testing.T) {
 		GoRAGBaseURL:            "http://127.0.0.1:9",
 		GoRAGTimeoutSeconds:     5,
 		ChatRAGRuntime:          "",
+		RAGLLMBaseURL:           llmUpstream.URL,
+		RAGLLMModel:             "test-model",
+		RAGLLMAPIKey:            "test-key",
+		RAGLLMTimeoutSeconds:    5,
 	}
 	store := NewChatSessionStore()
 	handler := NewChatProxyHandler(cfg, store)
@@ -99,6 +113,16 @@ func TestChatProxyUsesPythonWhenConfigured(t *testing.T) {
 func TestChatProxyFallsBackToGoWhenPythonUnavailable(t *testing.T) {
 	t.Setenv("HK_INSURANCE_RAG_DATA_PATH", "../../assets/rag_normalized/hk_insurance")
 	t.Setenv("HK_INSURANCE_RAG_MAX_SOURCES", "6")
+	t.Setenv("GO_RAG_INPROCESS_ENABLED", "true")
+
+	llmUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]any{"content": "fallback go answer"},
+			}},
+		})
+	}))
+	defer llmUpstream.Close()
 
 	cfg := &config.Config{
 		PythonRAGBaseURL:        "http://127.0.0.1:9",
@@ -106,11 +130,15 @@ func TestChatProxyFallsBackToGoWhenPythonUnavailable(t *testing.T) {
 		GoRAGBaseURL:            "http://127.0.0.1:9",
 		GoRAGTimeoutSeconds:     5,
 		ChatRAGRuntime:          "python",
+		RAGLLMBaseURL:           llmUpstream.URL,
+		RAGLLMModel:             "test-model",
+		RAGLLMAPIKey:            "test-key",
+		RAGLLMTimeoutSeconds:    5,
 	}
 	store := NewChatSessionStore()
 	handler := NewChatProxyHandler(cfg, store)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(`{"query":"fallback","model":"insurance","provider":"prudential"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(`{"query":"What is Prudential room and board coverage?","model":"insurance","provider":"prudential"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	handler(rr, req)

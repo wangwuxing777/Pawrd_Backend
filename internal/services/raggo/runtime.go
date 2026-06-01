@@ -9,10 +9,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 )
 
 type Source struct {
@@ -62,15 +62,6 @@ type reranker struct {
 	client  *http.Client
 }
 
-var tokenSplitRe = regexp.MustCompile(`[^\p{L}\p{N}]+`)
-
-type queryIntent struct {
-	isDefinition         bool
-	isComparison         bool
-	isWaitingPeriodFocus bool
-	mentionedProviders   []string
-}
-
 func AnswerQuery(cfg Config, question, provider, language string, maxSources int) AnswerResult {
 	started := time.Now()
 	question = strings.TrimSpace(question)
@@ -81,7 +72,7 @@ func AnswerQuery(cfg Config, question, provider, language string, maxSources int
 			Question:       question,
 			Provider:       provider,
 			Language:       language,
-			Intent:         formatIntent(question, provider, language),
+			Intent:         "retrieval",
 			Answer:         "RAG corpus loading failed in Go runtime: " + err.Error(),
 			AnswerMode:     "go_error",
 			Disclaimer:     defaultDisclaimer(),
@@ -92,23 +83,19 @@ func AnswerQuery(cfg Config, question, provider, language string, maxSources int
 
 	candidates := rankCandidates(chunks, question, provider, language, maxSources)
 	candidates = rerankCandidates(cfg, question, candidates)
-	candidates = selectTopCandidates(candidates, detectQueryIntent(question), maxSources)
+	candidates = trimCandidates(candidates, maxSources)
 	sources := make([]Source, 0, len(candidates))
 	for _, c := range candidates {
 		sources = append(sources, buildSourcePayload(c.chunk, c.score))
 	}
 
 	answer, mode, structured := summarizeSources(cfg, question, provider, language, sources)
-	if strings.TrimSpace(answer) == "" {
-		answer = "No reliable evidence found in the current Go RAG retrieval for this query."
-		mode = "go_no_evidence"
-	}
 
 	return AnswerResult{
 		Question:       question,
 		Provider:       provider,
 		Language:       language,
-		Intent:         formatIntent(question, provider, language),
+		Intent:         "retrieval",
 		Answer:         answer,
 		AnswerMode:     mode,
 		Structured:     structured,
@@ -121,24 +108,29 @@ func AnswerQuery(cfg Config, question, provider, language string, maxSources int
 
 func summarizeSources(cfg Config, question, provider, language string, sources []Source) (string, string, map[string]any) {
 	if len(sources) == 0 {
-		return "No reliable evidence found in the current Go RAG retrieval for this query.", "go_no_evidence", nil
+		return "", "go_no_evidence", nil
 	}
 
 	summarizer := newLLMSummarizer(cfg)
-	if summarizer != nil {
-		answer, err := summarizer.summarize(question, provider, language, sources)
-		if err == nil && strings.TrimSpace(answer) != "" {
-			return strings.TrimSpace(answer), "go_rag_llm_summary", map[string]any{
-				"type":             "rag_llm_summary",
-				"source_count":     len(sources),
-				"summarizer_model": cfg.LLMModel,
-			}
+	if summarizer == nil {
+		return "", "go_no_llm_summary", map[string]any{
+			"type":         "rag_llm_summary_unavailable",
+			"source_count": len(sources),
 		}
 	}
 
-	return buildExtractiveFallback(question, provider, sources), "go_rag_source_summary_fallback", map[string]any{
-		"type":         "rag_source_summary_fallback",
-		"source_count": len(sources),
+	answer, err := summarizer.summarize(question, provider, language, sources)
+	if err != nil || strings.TrimSpace(answer) == "" {
+		return "", "go_no_llm_summary", map[string]any{
+			"type":         "rag_llm_summary_unavailable",
+			"source_count": len(sources),
+		}
+	}
+
+	return strings.TrimSpace(answer), "go_rag_llm_summary", map[string]any{
+		"type":             "rag_llm_summary",
+		"source_count":     len(sources),
+		"summarizer_model": cfg.LLMModel,
 	}
 }
 
@@ -384,51 +376,11 @@ func rerankDocument(ch Chunk) string {
 	return strings.TrimSpace(strings.Join(parts, "\n"))
 }
 
-func buildExtractiveFallback(question, provider string, sources []Source) string {
-	lines := make([]string, 0, len(sources)+2)
-	if strings.TrimSpace(provider) != "" {
-		lines = append(lines, fmt.Sprintf("No LLM summary is available, so here are the top retrieved %s policy snippets for your question:", provider))
-	} else {
-		lines = append(lines, "No LLM summary is available, so here are the top retrieved policy snippets for your question:")
-	}
-	for i, src := range sources {
-		label := strings.TrimSpace(src.SourceName)
-		if label == "" {
-			label = "snippet"
-		}
-		meta := make([]string, 0, 3)
-		if src.Provider != "" {
-			meta = append(meta, src.Provider)
-		}
-		if src.Clauses != "" {
-			meta = append(meta, "clause "+src.Clauses)
-		}
-		if src.SectionPath != "" {
-			meta = append(meta, src.SectionPath)
-		}
-		line := fmt.Sprintf("%d. %s", i+1, label)
-		if len(meta) > 0 {
-			line += " [" + strings.Join(meta, " | ") + "]"
-		}
-		line += ": " + compactSnippet(src.Snippet, 280)
-		lines = append(lines, line)
-	}
-	return strings.Join(lines, "\n")
-}
-
 func rankCandidates(chunks []Chunk, question, provider, language string, maxSources int) []rankedChunk {
 	tokens := tokenize(question)
-	intent := detectQueryIntent(question)
-	queryLanguage := language
-	if strings.TrimSpace(queryLanguage) == "" {
-		queryLanguage = inferQueryLanguage(question)
-	}
 	out := make([]rankedChunk, 0, 64)
 	for _, ch := range chunks {
 		if provider != "" && ch.Metadata["provider"] != provider {
-			continue
-		}
-		if provider == "" && len(intent.mentionedProviders) > 0 && !containsProvider(intent.mentionedProviders, ch.Metadata["provider"]) {
 			continue
 		}
 		if language != "" && ch.Metadata["language"] != language {
@@ -444,10 +396,6 @@ func rankCandidates(chunks []Chunk, question, provider, language string, maxSour
 			ch.Metadata["topic_tags"],
 		}, "\n"))
 		score := lexicalScore(searchText, tokens)
-		score += metadataBonus(ch, tokens, intent)
-		if queryLanguage != "" && ch.Metadata["language"] == queryLanguage {
-			score += 0.8
-		}
 		if score <= 0 {
 			continue
 		}
@@ -473,43 +421,59 @@ func rankCandidates(chunks []Chunk, question, provider, language string, maxSour
 	if len(out) > limit {
 		out = out[:limit]
 	}
-	out = diversifyCandidates(out, intent)
 	return out
+}
+
+func trimCandidates(candidates []rankedChunk, maxSources int) []rankedChunk {
+	if len(candidates) == 0 {
+		return candidates
+	}
+	limit := maxSources
+	if limit <= 0 || limit > len(candidates) {
+		limit = len(candidates)
+	}
+	return candidates[:limit]
 }
 
 func tokenize(question string) []string {
 	normalized := strings.ToLower(strings.TrimSpace(question))
-	raw := tokenSplitRe.Split(normalized, -1)
-	out := make([]string, 0, len(raw)*2)
+	out := make([]string, 0, 16)
 	seen := map[string]bool{}
-	for _, token := range raw {
-		token = strings.TrimSpace(token)
+	current := strings.Builder{}
+	flush := func() {
+		if current.Len() == 0 {
+			return
+		}
+		token := strings.TrimSpace(current.String())
+		current.Reset()
 		if token == "" || seen[token] {
-			continue
+			return
 		}
 		if len(token) == 1 && !containsHan(token) {
-			continue
+			return
 		}
 		seen[token] = true
 		out = append(out, token)
 	}
-	for _, run := range hanRuns(normalized) {
-		if len([]rune(run)) < 2 {
-			if !seen[run] {
-				seen[run] = true
-				out = append(out, run)
-			}
+	for _, r := range normalized {
+		if isTokenRune(r) {
+			current.WriteRune(r)
 			continue
 		}
-		for _, token := range hanNGrams(run, 2, 4) {
-			if seen[token] {
-				continue
-			}
-			seen[token] = true
-			out = append(out, token)
-		}
+		flush()
 	}
+	flush()
 	return out
+}
+
+func isTokenRune(r rune) bool {
+	if unicode.IsLetter(r) || unicode.IsNumber(r) {
+		return true
+	}
+	if r >= 0x4E00 && r <= 0x9FFF {
+		return true
+	}
+	return r == '_' || r == '-' || r == '\'' || r == '/'
 }
 
 func lexicalScore(text string, tokens []string) float64 {
@@ -525,306 +489,6 @@ func lexicalScore(text string, tokens []string) float64 {
 		score += 1 + math.Min(float64(count-1), 2)*0.25
 	}
 	return score
-}
-
-func metadataBonus(ch Chunk, tokens []string, intent queryIntent) float64 {
-	provider := strings.ToLower(ch.Metadata["provider"])
-	product := strings.ToLower(ch.Metadata["product"])
-	sourceName := strings.ToLower(ch.Metadata["source_name"])
-	sectionPath := strings.ToLower(ch.Metadata["section_path"])
-	clauses := strings.ToLower(ch.Metadata["clauses"])
-	unitTypes := strings.ToLower(ch.Metadata["unit_types"])
-	topicTags := strings.ToLower(ch.Metadata["topic_tags"])
-	fields := []string{provider, product, sourceName, sectionPath, clauses, unitTypes, topicTags}
-	score := 0.0
-	for _, token := range tokens {
-		for i, field := range fields {
-			if field == "" || !strings.Contains(field, token) {
-				continue
-			}
-			switch i {
-			case 3:
-				score += 1.5
-			case 6:
-				score += 1.2
-			default:
-				score += 0.6
-			}
-		}
-	}
-	if containsAny(sectionPath, "claims provisions", "proof and documentation", "abandoned claims", "general conditions", "一般條款", "一般不保事項") {
-		score -= 1.4
-	}
-	if unitTypes == "benefit" {
-		score += 0.8
-	}
-	if unitTypes == "definition" {
-		score += 0.35
-	}
-	if unitTypes == "waiting_period" {
-		score += 0.2
-	}
-	if hasTopicTag(topicTags, "summary") {
-		score += 0.15
-	}
-	if intent.isDefinition {
-		if unitTypes == "definition" {
-			score += 3.5
-		}
-		if containsAny(topicTags, "waiting_period") {
-			score += 1.2
-		}
-		if hasTopicTag(topicTags, "summary") {
-			score += 1.6
-		}
-		if containsAny(sectionPath, "definitions", "definition", "定義", "釋義") {
-			score += 1.5
-		}
-		if containsAny(sectionPath, "what your policy does not cover", "does not cover", "不保", "不承保") {
-			score -= 1.0
-		}
-		if containsAny(sectionPath, "advanced critical illness", "critical illness cash benefit") {
-			score -= 0.8
-		}
-		if containsAny(ch.Text, "must pass before", "comes into effect", "shall be available only after", "only after the expiry") {
-			score += 1.0
-		}
-		if containsAny(ch.Text, "if benefits under part", "if benefits under", "part 1.6", "part 1.4") {
-			score -= 0.8
-		}
-		if unitTypes == "benefit" {
-			score -= 0.4
-		}
-	}
-	if intent.isWaitingPeriodFocus {
-		if containsAny(topicTags, "waiting_period") {
-			score += 0.8
-		}
-		if hasTopicTag(topicTags, "summary") {
-			score += 1.8
-		}
-	}
-	if intent.isComparison {
-		if unitTypes == "benefit" {
-			score += 0.3
-		}
-		if containsAny(topicTags, "limit") {
-			score += 0.4
-		}
-		if hasTopicTag(topicTags, "summary") {
-			score += 1.8
-		}
-	}
-	return score
-}
-
-func detectQueryIntent(question string) queryIntent {
-	lower := strings.ToLower(strings.TrimSpace(question))
-	waitingPeriodFocus := containsAny(lower, "waiting period", "等候期")
-	return queryIntent{
-		isDefinition: (containsAny(lower,
-			"meaning of", "what is", "what does", "define", "definition",
-			"意思", "係咩", "是什么", "是什麼", "定義",
-		) && waitingPeriodFocus) || (strings.HasPrefix(lower, "what is ") && waitingPeriodFocus),
-		isComparison:         containsAny(lower, "compare", "comparison", "vs", "versus", "比較", "对比", "對比"),
-		isWaitingPeriodFocus: waitingPeriodFocus,
-		mentionedProviders:   detectMentionedProviders(lower),
-	}
-}
-
-func diversifyCandidates(candidates []rankedChunk, intent queryIntent) []rankedChunk {
-	if len(candidates) < 3 || (!intent.isDefinition && !intent.isComparison && !intent.isWaitingPeriodFocus) {
-		return candidates
-	}
-
-	out := make([]rankedChunk, 0, len(candidates))
-	used := make([]bool, len(candidates))
-	seenKeys := map[string]bool{}
-	appendCandidate := func(i int) {
-		key := candidateKey(candidates[i])
-		if seenKeys[key] {
-			return
-		}
-		out = append(out, candidates[i])
-		used[i] = true
-		seenKeys[key] = true
-	}
-
-	if intent.isDefinition || intent.isWaitingPeriodFocus {
-		for _, want := range []struct {
-			unitType   string
-			requireTag string
-		}{
-			{unitType: "definition"},
-			{requireTag: "summary"},
-		} {
-			for i, candidate := range candidates {
-				if used[i] {
-					continue
-				}
-				if want.unitType != "" && candidate.chunk.Metadata["unit_types"] != want.unitType {
-					continue
-				}
-				if want.requireTag != "" && !hasTopicTag(candidate.chunk.Metadata["topic_tags"], want.requireTag) {
-					continue
-				}
-				appendCandidate(i)
-				break
-			}
-		}
-	}
-
-	if intent.isComparison {
-		seenSummaryProviders := map[string]bool{}
-		for i, candidate := range candidates {
-			if used[i] {
-				continue
-			}
-			if !hasTopicTag(candidate.chunk.Metadata["topic_tags"], "summary") {
-				continue
-			}
-			if intent.isWaitingPeriodFocus && !hasTopicTag(candidate.chunk.Metadata["topic_tags"], "waiting_period") {
-				continue
-			}
-			provider := candidate.chunk.Metadata["provider"]
-			if provider == "" || seenSummaryProviders[provider] {
-				continue
-			}
-			appendCandidate(i)
-			seenSummaryProviders[provider] = true
-		}
-
-		seenProviders := map[string]bool{}
-		for _, candidate := range out {
-			seenProviders[candidate.chunk.Metadata["provider"]] = true
-		}
-		for i, candidate := range candidates {
-			if used[i] {
-				continue
-			}
-			provider := candidate.chunk.Metadata["provider"]
-			if provider == "" || seenProviders[provider] {
-				continue
-			}
-			appendCandidate(i)
-			seenProviders[provider] = true
-		}
-	}
-
-	for i, candidate := range candidates {
-		if used[i] {
-			continue
-		}
-		if intent.isWaitingPeriodFocus && !waitingPeriodCandidate(candidate) {
-			continue
-		}
-		appendCandidate(i)
-	}
-	return out
-}
-
-func selectTopCandidates(candidates []rankedChunk, intent queryIntent, maxSources int) []rankedChunk {
-	if len(candidates) == 0 {
-		return candidates
-	}
-	limit := maxSources
-	if limit <= 0 || limit > len(candidates) {
-		limit = len(candidates)
-	}
-	if limit >= len(candidates) {
-		return candidates
-	}
-
-	selected := make([]rankedChunk, 0, limit)
-	used := make([]bool, len(candidates))
-	seenKeys := map[string]bool{}
-	seenProviders := map[string]bool{}
-	appendCandidate := func(i int) bool {
-		key := candidateKey(candidates[i])
-		if seenKeys[key] {
-			return false
-		}
-		selected = append(selected, candidates[i])
-		used[i] = true
-		seenKeys[key] = true
-		if provider := candidates[i].chunk.Metadata["provider"]; provider != "" {
-			seenProviders[provider] = true
-		}
-		return true
-	}
-
-	if intent.isDefinition || intent.isWaitingPeriodFocus {
-		for _, want := range []struct {
-			unitType   string
-			requireTag string
-		}{
-			{unitType: "definition"},
-			{requireTag: "summary"},
-			{unitType: "definition"},
-		} {
-			for i, candidate := range candidates {
-				if used[i] || len(selected) >= limit {
-					continue
-				}
-				if want.unitType != "" && candidate.chunk.Metadata["unit_types"] != want.unitType {
-					continue
-				}
-				if want.requireTag != "" && !hasTopicTag(candidate.chunk.Metadata["topic_tags"], want.requireTag) {
-					continue
-				}
-				if appendCandidate(i) {
-					break
-				}
-			}
-		}
-	}
-
-	if intent.isComparison {
-		seenSummaryProviders := map[string]bool{}
-		for i, candidate := range candidates {
-			if used[i] || len(selected) >= limit {
-				continue
-			}
-			if !hasTopicTag(candidate.chunk.Metadata["topic_tags"], "summary") {
-				continue
-			}
-			if intent.isWaitingPeriodFocus && !hasTopicTag(candidate.chunk.Metadata["topic_tags"], "waiting_period") {
-				continue
-			}
-			provider := candidate.chunk.Metadata["provider"]
-			if provider == "" || seenProviders[provider] || seenSummaryProviders[provider] {
-				continue
-			}
-			if appendCandidate(i) {
-				seenSummaryProviders[provider] = true
-			}
-		}
-		for i, candidate := range candidates {
-			if used[i] || len(selected) >= limit {
-				continue
-			}
-			provider := candidate.chunk.Metadata["provider"]
-			if provider == "" || seenProviders[provider] {
-				continue
-			}
-			appendCandidate(i)
-		}
-	}
-
-	for i, candidate := range candidates {
-		if used[i] || len(selected) >= limit {
-			continue
-		}
-		if intent.isWaitingPeriodFocus && !waitingPeriodCandidate(candidate) {
-			continue
-		}
-		appendCandidate(i)
-	}
-	return selected
-}
-
-func candidateKey(candidate rankedChunk) string {
-	return candidate.chunk.Metadata["provider"] + "|" + candidate.chunk.Metadata["section_path"] + "|" + candidate.chunk.Metadata["source_name"] + "|" + candidate.chunk.Metadata["language"]
 }
 
 func buildSourcePayload(ch Chunk, score float64) Source {
@@ -851,27 +515,6 @@ func compactSnippet(snippet string, limit int) string {
 	return snippet
 }
 
-func formatIntent(question, provider, language string) string {
-	parts := []string{"retrieval"}
-	if strings.TrimSpace(provider) != "" {
-		parts = append(parts, "provider_filter")
-	}
-	if strings.TrimSpace(language) != "" {
-		parts = append(parts, "language_filter")
-	}
-	if strings.TrimSpace(question) == "" {
-		parts = append(parts, "empty_question")
-	}
-	return strings.Join(parts, ", ")
-}
-
-func inferQueryLanguage(question string) string {
-	if containsHan(question) {
-		return "zh"
-	}
-	return "en"
-}
-
 func defaultDisclaimer() string {
 	return "仅供参考，不保证 100% 准确、完整或最新。最终以保险公司官网、正式保单、承保表、批单及最新书面说明为准。"
 }
@@ -885,135 +528,11 @@ func containsHan(s string) bool {
 	return false
 }
 
-func hanRuns(s string) []string {
-	runs := make([]string, 0, 4)
-	buf := make([]rune, 0, 16)
-	flush := func() {
-		if len(buf) == 0 {
-			return
-		}
-		runs = append(runs, string(buf))
-		buf = buf[:0]
-	}
-	for _, r := range s {
-		if r >= 0x4E00 && r <= 0x9FFF {
-			buf = append(buf, r)
-			continue
-		}
-		flush()
-	}
-	flush()
-	return runs
-}
-
-func hanNGrams(s string, minN, maxN int) []string {
-	runes := []rune(s)
-	if len(runes) == 0 {
-		return nil
-	}
-	if minN < 1 {
-		minN = 1
-	}
-	if maxN < minN {
-		maxN = minN
-	}
-	out := make([]string, 0, len(runes)*2)
-	for n := minN; n <= maxN; n++ {
-		if n > len(runes) {
-			break
-		}
-		for i := 0; i+n <= len(runes); i++ {
-			out = append(out, string(runes[i:i+n]))
-		}
-	}
-	return out
-}
-
 func valueOr(v, fallback string) string {
 	if strings.TrimSpace(v) == "" {
 		return fallback
 	}
 	return v
-}
-
-func containsAny(s string, terms ...string) bool {
-	for _, term := range terms {
-		if strings.Contains(s, term) {
-			return true
-		}
-	}
-	return false
-}
-
-func hasTopicTag(topicTags, target string) bool {
-	for _, tag := range strings.Split(topicTags, ",") {
-		if strings.TrimSpace(tag) == target {
-			return true
-		}
-	}
-	return false
-}
-
-func waitingPeriodCandidate(candidate rankedChunk) bool {
-	if candidate.chunk.Metadata["unit_types"] == "definition" {
-		return true
-	}
-	if hasTopicTag(candidate.chunk.Metadata["topic_tags"], "waiting_period") {
-		return true
-	}
-	return containsAny(strings.ToLower(candidate.chunk.Metadata["section_path"]), "waiting period", "等候期")
-}
-
-func seenProvider(used []bool, candidates []rankedChunk, provider string) bool {
-	for i, usedCandidate := range used {
-		if !usedCandidate {
-			continue
-		}
-		if candidates[i].chunk.Metadata["provider"] == provider {
-			return true
-		}
-	}
-	return false
-}
-
-func selectedProviders(selected []rankedChunk) []bool {
-	flags := make([]bool, len(selected))
-	for i := range selected {
-		flags[i] = true
-	}
-	return flags
-}
-
-func detectMentionedProviders(lowerQuestion string) []string {
-	providers := []struct {
-		key   string
-		terms []string
-	}{
-		{key: "bluecross", terms: []string{"blue cross", "bluecross", "藍十字", "蓝十字"}},
-		{key: "prudential", terms: []string{"prudential", "保誠", "保诚"}},
-		{key: "one_degree", terms: []string{"one degree", "onedegree", "one_degree"}},
-		{key: "msig", terms: []string{"msig", "三井住友"}},
-		{key: "bolttech", terms: []string{"bolttech"}},
-	}
-	out := make([]string, 0, 2)
-	for _, provider := range providers {
-		for _, term := range provider.terms {
-			if strings.Contains(lowerQuestion, strings.ToLower(term)) {
-				out = append(out, provider.key)
-				break
-			}
-		}
-	}
-	return out
-}
-
-func containsProvider(items []string, target string) bool {
-	for _, item := range items {
-		if item == target {
-			return true
-		}
-	}
-	return false
 }
 
 func BuildCapabilities(cfg Config) map[string]any {
@@ -1034,9 +553,8 @@ func BuildCapabilities(cfg Config) map[string]any {
 			"query_post":   "/api/rag/go/query",
 		},
 		"summarization": map[string]any{
-			"mode":                "retrieval_plus_llm_summary",
-			"llm_configured":      strings.TrimSpace(cfg.LLMBaseURL) != "" && strings.TrimSpace(cfg.LLMModel) != "" && strings.TrimSpace(cfg.LLMAPIKey) != "",
-			"extractive_fallback": true,
+			"mode":           "retrieval_plus_llm_summary",
+			"llm_configured": strings.TrimSpace(cfg.LLMBaseURL) != "" && strings.TrimSpace(cfg.LLMModel) != "" && strings.TrimSpace(cfg.LLMAPIKey) != "",
 		},
 		"index": map[string]any{
 			"persist_dir":                cfg.PersistDir,

@@ -33,24 +33,24 @@ func main() {
 			Question:      "What is the annual limit for Prudential room and board?",
 			Provider:      "prudential",
 			Language:      "en",
-			ExpectedModes: []string{"go_rag_llm_summary", "go_rag_source_summary_fallback"},
+			ExpectedModes: []string{"go_rag_llm_summary"},
 		},
 		{
 			Name:          "bluecross_consult_coverage_zh",
 			Question:      "Blue Cross 包唔包獸醫診症？",
 			Provider:      "bluecross",
 			Language:      "zh",
-			ExpectedModes: []string{"go_rag_llm_summary", "go_rag_source_summary_fallback"},
+			ExpectedModes: []string{"go_rag_llm_summary"},
 		},
 		{
 			Name:          "bluecross_vs_prudential_consult_limit",
 			Question:      "Compare Blue Cross and Prudential veterinary consultation limits.",
-			ExpectedModes: []string{"go_rag_llm_summary", "go_rag_source_summary_fallback"},
+			ExpectedModes: []string{"go_rag_llm_summary"},
 		},
 		{
 			Name:          "waiting_period_meaning",
 			Question:      "What is the meaning of waiting period?",
-			ExpectedModes: []string{"go_rag_llm_summary", "go_rag_source_summary_fallback"},
+			ExpectedModes: []string{"go_rag_llm_summary"},
 		},
 	}
 

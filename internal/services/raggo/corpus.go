@@ -3,7 +3,6 @@ package raggo
 import (
 	"bufio"
 	"database/sql"
-	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -199,9 +198,6 @@ func loadStructuredInsuranceChunks(cfg Config) ([]Chunk, error) {
 	}
 	limitRows.Close()
 
-	chunks = append(chunks, buildAggregatedWaitingPeriodChunks(waitingPeriodGroups)...)
-	chunks = append(chunks, buildAggregatedLimitChunks(limitGroups)...)
-
 	return chunks, nil
 }
 
@@ -232,100 +228,6 @@ func buildStructuredLimitText(product, subName, subLimit, remark string) string 
 		parts = append(parts, cleanedRemark)
 	}
 	return strings.Join(parts, ": ")
-}
-
-func buildAggregatedWaitingPeriodChunks(groups map[string][]structuredWaitingPeriod) []Chunk {
-	chunks := make([]Chunk, 0, len(groups))
-	for key, items := range groups {
-		if len(items) < 2 {
-			continue
-		}
-		parts := strings.Split(key, "|")
-		if len(parts) != 2 {
-			continue
-		}
-		provider, language := parts[0], parts[1]
-		if allWaitingTextsEqual(items) {
-			text := fmt.Sprintf("%s waiting period summary: %s. Applies consistently across: %s", provider, items[0].text, joinProductNames(items))
-			if language == "zh" {
-				text = fmt.Sprintf("%s 等候期摘要：%s。适用于以下计划：%s", provider, items[0].text, joinProductNames(items))
-			}
-			chunks = append(chunks, buildStructuredChunk(
-				provider, language, "", "structured_waiting_period_summary",
-				"Structured Product Data > Waiting Period Summary",
-				"summary",
-				"waiting_period",
-				"structured_product,waiting_period,summary",
-				text,
-			))
-			continue
-		}
-
-		lines := make([]string, 0, len(items)+1)
-		if language == "zh" {
-			lines = append(lines, provider+" 等候期摘要：")
-			for _, item := range items {
-				lines = append(lines, item.product+"： "+item.text)
-			}
-		} else {
-			lines = append(lines, provider+" waiting period summary:")
-			for _, item := range items {
-				lines = append(lines, item.product+": "+item.text)
-			}
-		}
-		chunks = append(chunks, buildStructuredChunk(
-			provider, language, "", "structured_waiting_period_summary",
-			"Structured Product Data > Waiting Period Summary",
-			"summary",
-			"waiting_period",
-			"structured_product,waiting_period,summary",
-			strings.Join(lines, " "),
-		))
-	}
-	return chunks
-}
-
-func buildAggregatedLimitChunks(groups map[string][]structuredPlanLimit) []Chunk {
-	chunks := make([]Chunk, 0, len(groups))
-	for key, items := range groups {
-		if len(items) < 2 {
-			continue
-		}
-		parts := strings.Split(key, "|")
-		if len(parts) != 3 {
-			continue
-		}
-		provider, language, benefit := parts[0], parts[1], parts[2]
-		lines := make([]string, 0, len(items)+1)
-		title := provider + " coverage summary for " + benefit + ":"
-		if language == "zh" {
-			title = provider + " 保障限额摘要（" + benefit + "）："
-		}
-		lines = append(lines, title)
-		for _, item := range items {
-			line := item.product
-			if item.limit != "" {
-				if language == "zh" {
-					line += " 限额 " + item.limit
-				} else {
-					line += " limit " + item.limit
-				}
-			}
-			if item.remark != "" {
-				line += " " + item.remark
-			}
-			lines = append(lines, line)
-		}
-		chunks = append(chunks, buildStructuredChunk(
-			provider, language, "", "structured_sub_coverage_summary",
-			"Structured Product Data > Coverage Limit Summary > "+benefit,
-			"summary",
-			"benefit",
-			"structured_product,limit,benefit,summary",
-			strings.Join(lines, " "),
-		))
-	}
-	return chunks
 }
 
 func allWaitingTextsEqual(items []structuredWaitingPeriod) bool {

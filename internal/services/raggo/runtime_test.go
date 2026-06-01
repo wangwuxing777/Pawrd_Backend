@@ -35,41 +35,21 @@ func TestValidateMaxSources(t *testing.T) {
 	}
 }
 
-func TestBuildExtractiveFallback(t *testing.T) {
-	sources := []Source{
-		{
-			Provider:    "prudential",
-			SourceName:  "sample.md",
-			Clauses:     "1.C",
-			SectionPath: "Benefits > Waiting Period",
-			Snippet:     "Waiting period means claims can only start after the listed number of days.",
-		},
-	}
-
-	answer := buildExtractiveFallback("what does waiting period mean", "prudential", sources)
-	if !strings.Contains(answer, "sample.md") {
-		t.Fatalf("expected source name in fallback answer, got %q", answer)
-	}
-	if !strings.Contains(answer, "Waiting period means claims can only start") {
-		t.Fatalf("expected snippet in fallback answer, got %q", answer)
-	}
-}
-
-func TestAnswerQueryFallsBackToExtractiveSummaryWhenLLMDisabled(t *testing.T) {
+func TestAnswerQueryReturnsNoLLMSummaryWhenLLMDisabled(t *testing.T) {
 	cfg := LoadConfig()
 	cfg.LLMBaseURL = ""
 	cfg.LLMModel = ""
 	cfg.LLMAPIKey = ""
 
 	result := AnswerQuery(cfg, "What is the meaning of waiting period?", "", "", 3)
-	if result.AnswerMode != "go_rag_source_summary_fallback" {
-		t.Fatalf("expected extractive fallback mode, got %s answer=%q", result.AnswerMode, result.Answer)
+	if result.AnswerMode != "go_no_llm_summary" {
+		t.Fatalf("expected no-llm-summary mode, got %s answer=%q", result.AnswerMode, result.Answer)
+	}
+	if strings.TrimSpace(result.Answer) != "" {
+		t.Fatalf("expected empty answer when llm disabled, got %q", result.Answer)
 	}
 	if len(result.Sources) == 0 {
 		t.Fatalf("expected retrieved sources")
-	}
-	if !strings.Contains(result.Answer, "retrieved policy snippets") {
-		t.Fatalf("expected fallback framing, got %q", result.Answer)
 	}
 }
 
@@ -191,32 +171,18 @@ func TestLoadChunks_FromNormalizedCorpus(t *testing.T) {
 	}
 }
 
-func TestLoadChunks_IncludesStructuredSummaryChunks(t *testing.T) {
+func TestLoadChunks_DoesNotIncludeAggregatedSummaryChunks(t *testing.T) {
 	cfg := LoadConfig()
 	chunks, err := LoadChunks(cfg)
 	if err != nil {
 		t.Fatalf("load chunks: %v", err)
 	}
 
-	var foundWaitingSummary bool
-	var foundCoverageSummary bool
 	for _, ch := range chunks {
 		switch ch.Metadata["source_name"] {
-		case "structured_waiting_period_summary":
-			foundWaitingSummary = true
-		case "structured_sub_coverage_summary":
-			foundCoverageSummary = true
+		case "structured_waiting_period_summary", "structured_sub_coverage_summary", "concept_merged_evidence":
+			t.Fatalf("unexpected deterministic summary chunk still present: %s", ch.Metadata["source_name"])
 		}
-		if foundWaitingSummary && foundCoverageSummary {
-			break
-		}
-	}
-
-	if !foundWaitingSummary {
-		t.Fatalf("expected aggregated waiting period summary chunk")
-	}
-	if !foundCoverageSummary {
-		t.Fatalf("expected aggregated coverage summary chunk")
 	}
 }
 
@@ -233,77 +199,17 @@ func TestLoadConfig_FallsBackToNormalizedCorpusWhenEnvPathMissing(t *testing.T) 
 	}
 }
 
-func TestDetectQueryIntent(t *testing.T) {
-	intent := detectQueryIntent("What is the meaning of waiting period?")
-	if !intent.isDefinition || intent.isComparison {
-		t.Fatalf("unexpected definition intent: %+v", intent)
+func TestRankCandidatesUsesPlainLexicalRetrieval(t *testing.T) {
+	chunks := []Chunk{
+		{Text: "Blue Cross waiting period is 90 days for illness.", Metadata: map[string]string{"provider": "bluecross", "language": "en", "source_name": "a.md", "section_path": "Definitions"}},
+		{Text: "Prudential covers room and board.", Metadata: map[string]string{"provider": "prudential", "language": "en", "source_name": "b.md", "section_path": "Benefits"}},
 	}
 
-	intent = detectQueryIntent("Compare Blue Cross and Prudential veterinary consultation limits.")
-	if !intent.isComparison || intent.isDefinition {
-		t.Fatalf("unexpected comparison intent: %+v", intent)
+	got := rankCandidates(chunks, "Blue Cross waiting period", "", "", 2)
+	if len(got) == 0 {
+		t.Fatalf("expected candidates")
 	}
-
-	intent = detectQueryIntent("What is Blue Cross waiting period?")
-	if !intent.isWaitingPeriodFocus {
-		t.Fatalf("expected waiting-period focus intent: %+v", intent)
-	}
-}
-
-func TestDiversifyCandidatesDefinitionPromotesDefinitionEvidence(t *testing.T) {
-	candidates := []rankedChunk{
-		{chunk: Chunk{Metadata: map[string]string{"unit_types": "benefit", "provider": "a", "section_path": "Benefits", "source_name": "benefit.md"}}, score: 10},
-		{chunk: Chunk{Metadata: map[string]string{"unit_types": "definition", "provider": "b", "section_path": "Definitions", "source_name": "definition.md"}}, score: 9},
-		{chunk: Chunk{Metadata: map[string]string{"unit_types": "waiting_period", "topic_tags": "structured_product,waiting_period,summary", "provider": "c", "section_path": "Structured Waiting", "source_name": "waiting.md"}}, score: 8},
-	}
-
-	got := diversifyCandidates(candidates, queryIntent{isDefinition: true})
-	if len(got) < 2 {
-		t.Fatalf("expected diversified candidates")
-	}
-	if got[0].chunk.Metadata["unit_types"] != "definition" {
-		t.Fatalf("expected definition first, got %s", got[0].chunk.Metadata["unit_types"])
-	}
-	if !hasTopicTag(got[1].chunk.Metadata["topic_tags"], "summary") {
-		t.Fatalf("expected summary evidence second, got tags=%s", got[1].chunk.Metadata["topic_tags"])
-	}
-}
-
-func TestDiversifyCandidatesComparisonPromotesProviderCoverage(t *testing.T) {
-	candidates := []rankedChunk{
-		{chunk: Chunk{Metadata: map[string]string{"provider": "prudential", "section_path": "A", "source_name": "1.md"}}, score: 10},
-		{chunk: Chunk{Metadata: map[string]string{"provider": "prudential", "section_path": "B", "source_name": "2.md"}}, score: 9},
-		{chunk: Chunk{Metadata: map[string]string{"provider": "bluecross", "section_path": "C", "source_name": "3.md"}}, score: 8},
-	}
-
-	got := diversifyCandidates(candidates, queryIntent{isComparison: true})
-	if len(got) < 2 {
-		t.Fatalf("expected diversified candidates")
-	}
-	if got[0].chunk.Metadata["provider"] != "prudential" {
-		t.Fatalf("expected first provider to preserve top-ranked source, got %s", got[0].chunk.Metadata["provider"])
-	}
-	if got[1].chunk.Metadata["provider"] != "bluecross" {
-		t.Fatalf("expected second provider to diversify coverage, got %s", got[1].chunk.Metadata["provider"])
-	}
-}
-
-func TestSelectTopCandidatesComparisonKeepsProviderCoverageWithinLimit(t *testing.T) {
-	candidates := []rankedChunk{
-		{chunk: Chunk{Metadata: map[string]string{"provider": "prudential", "section_path": "A", "source_name": "1.md"}}, score: 10},
-		{chunk: Chunk{Metadata: map[string]string{"provider": "prudential", "section_path": "B", "source_name": "2.md"}}, score: 9},
-		{chunk: Chunk{Metadata: map[string]string{"provider": "bluecross", "section_path": "C", "source_name": "3.md"}}, score: 8},
-		{chunk: Chunk{Metadata: map[string]string{"provider": "bluecross", "section_path": "D", "source_name": "4.md"}}, score: 7},
-	}
-
-	got := selectTopCandidates(candidates, queryIntent{isComparison: true}, 3)
-	if len(got) != 3 {
-		t.Fatalf("expected 3 selected candidates, got %d", len(got))
-	}
-	if got[0].chunk.Metadata["provider"] != "prudential" {
-		t.Fatalf("expected top-ranked provider first, got %s", got[0].chunk.Metadata["provider"])
-	}
-	if got[1].chunk.Metadata["provider"] != "bluecross" {
-		t.Fatalf("expected second provider to preserve coverage within limit, got %s", got[1].chunk.Metadata["provider"])
+	if got[0].chunk.Metadata["provider"] != "bluecross" {
+		t.Fatalf("expected lexical top hit to be bluecross, got %s", got[0].chunk.Metadata["provider"])
 	}
 }
