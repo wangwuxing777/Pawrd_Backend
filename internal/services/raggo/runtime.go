@@ -41,6 +41,7 @@ type QueryIntent struct {
 	Normalized       string
 	WantsComparison  bool
 	WantsWaiting     bool
+	AsksDefinition   bool
 	WantsConsult     bool
 	WantsCoverage    bool
 	AsksLimit        bool
@@ -409,6 +410,77 @@ func buildDeterministicWaitingPeriodAnswer(intent QueryIntent, sources []Source)
 		return "", "", nil
 	}
 	preferZH := questionPrefersZH(intent.RawQuestion)
+
+	if intent.AsksDefinition && intent.ProviderOverride == "" && !intent.WantsComparison {
+		byProvider := map[string]waitingPeriodFact{}
+		for _, fact := range facts {
+			if _, exists := byProvider[fact.Provider]; !exists {
+				byProvider[fact.Provider] = fact
+			}
+		}
+		if len(byProvider) > 0 {
+			providers := make([]string, 0, len(byProvider))
+			for p := range byProvider {
+				providers = append(providers, p)
+			}
+			sort.Strings(providers)
+
+			lines := make([]string, 0, len(providers))
+			items := make([]map[string]any, 0, len(providers))
+			for _, p := range providers {
+				f := byProvider[p]
+				summary := waitingPeriodEvidenceSummary(f, preferZH)
+				if summary == "" {
+					continue
+				}
+				if preferZH {
+					lines = append(lines, "- "+providerDisplay(p)+"："+summary+formatClauseSuffix(f.Clauses, true))
+				} else {
+					lines = append(lines, "- "+providerDisplay(p)+": "+summary+formatClauseSuffix(f.Clauses, false))
+				}
+				items = append(items, map[string]any{
+					"provider":    p,
+					"clauses":     f.Clauses,
+					"source_name": f.SourceName,
+					"illness_days": func() any {
+						if f.IllnessDays == nil {
+							return nil
+						}
+						return *f.IllnessDays
+					}(),
+					"cancer_days": func() any {
+						if f.CancerDays == nil {
+							return nil
+						}
+						return *f.CancerDays
+					}(),
+					"injury_days": func() any {
+						if f.InjuryDays == nil {
+							return nil
+						}
+						return *f.InjuryDays
+					}(),
+					"general_days": func() any {
+						if f.GeneralDays == nil {
+							return nil
+						}
+						return *f.GeneralDays
+					}(),
+					"no_waiting_period": f.NoWaitingPeriod,
+				})
+			}
+			if len(lines) > 0 {
+				answer := "In the retrieved policy clauses, a waiting period is the time that must pass before the listed condition can be claimed. The exact trigger and duration vary by provider:\n" + strings.Join(lines, "\n")
+				if preferZH {
+					answer = "根據已檢索到的保單條款，等候期是指保單生效後，需要先過指定日數，相關疾病或情況才可索償；實際日數會因保險公司和保障項目而異：\n" + strings.Join(lines, "\n")
+				}
+				return answer, "deterministic_waiting_period_single", map[string]any{
+					"type":  "waiting_period_single",
+					"items": items,
+				}
+			}
+		}
+	}
 
 	if intent.WantsComparison {
 		byProvider := map[string]waitingPeriodFact{}
@@ -1074,6 +1146,7 @@ func detectQueryIntent(question, provider string) QueryIntent {
 		Normalized:       normalized,
 		WantsComparison:  containsAny(normalized, "compare", "comparison", "比較", "对比"),
 		WantsWaiting:     containsAny(normalized, "waiting period", "等待期", "等候期", "几多日", "幾多日", "多久", "多少日"),
+		AsksDefinition:   containsAny(normalized, "what is", "meaning", "mean", "define", "解釋", "解释", "是什麼", "是什么", "意思"),
 		WantsConsult:     containsAny(normalized, "consult", "consultation", "vet fee", "診症", "诊症", "獸醫", "兽医", "診金"),
 		WantsCoverage:    containsAny(normalized, "cover", "coverage", "包唔包", "是否涵蓋", "是否覆盖", "賠唔賠", "赔不赔"),
 		AsksLimit:        containsAny(normalized, "annual limit", "limit", "maximum", "max", "最高賠償額", "最高赔偿额", "上限", "每次", "每年"),
@@ -1171,6 +1244,45 @@ func formatSingleWaitingPeriodLine(providerName, label string, days *int, fact w
 		value = strconv.Itoa(*days) + " days"
 	}
 	return providerName + " " + label + " is " + value + formatClauseSuffix(fact.Clauses, false)
+}
+
+func waitingPeriodEvidenceSummary(fact waitingPeriodFact, preferZH bool) string {
+	parts := make([]string, 0, 4)
+	if preferZH {
+		if fact.IllnessDays != nil {
+			parts = append(parts, "疾病需等待 "+strconv.Itoa(*fact.IllnessDays)+" 日")
+		}
+		if fact.CancerDays != nil {
+			parts = append(parts, "癌症需等待 "+strconv.Itoa(*fact.CancerDays)+" 日")
+		}
+		if fact.InjuryDays != nil {
+			parts = append(parts, "受傷需等待 "+strconv.Itoa(*fact.InjuryDays)+" 日")
+		}
+		if fact.GeneralDays != nil {
+			parts = append(parts, "一般條款列明需等待 "+strconv.Itoa(*fact.GeneralDays)+" 日")
+		}
+		if len(parts) == 0 && fact.NoWaitingPeriod {
+			return "條款列明不設等候期"
+		}
+		return strings.Join(parts, "；")
+	}
+
+	if fact.IllnessDays != nil {
+		parts = append(parts, "illness claims start after "+strconv.Itoa(*fact.IllnessDays)+" days")
+	}
+	if fact.CancerDays != nil {
+		parts = append(parts, "cancer claims start after "+strconv.Itoa(*fact.CancerDays)+" days")
+	}
+	if fact.InjuryDays != nil {
+		parts = append(parts, "injury claims start after "+strconv.Itoa(*fact.InjuryDays)+" days")
+	}
+	if fact.GeneralDays != nil {
+		parts = append(parts, "the general clause starts after "+strconv.Itoa(*fact.GeneralDays)+" days")
+	}
+	if len(parts) == 0 && fact.NoWaitingPeriod {
+		return "the clause says there is no waiting period"
+	}
+	return strings.Join(parts, ", ")
 }
 
 func waitingLabelZH(label string) string {

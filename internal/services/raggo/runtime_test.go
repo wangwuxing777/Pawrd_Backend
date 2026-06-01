@@ -53,6 +53,64 @@ func TestBuildDeterministicAnswer_WaitingPeriod(t *testing.T) {
 	}
 }
 
+func TestBuildDeterministicAnswer_WaitingPeriodDefinitionUsesEvidence(t *testing.T) {
+	sources := []Source{
+		{
+			SourceName: "prudential.md",
+			Provider:   "prudential",
+			Clauses:    "4.1",
+			Snippet:    "Waiting Period\nCancer: 180 days\nIllness: 30 days\nInjury: 7 days",
+		},
+		{
+			SourceName: "msig.md",
+			Provider:   "msig",
+			Clauses:    "2.3",
+			Snippet:    "Waiting Period\nIllness: 90 days\nInjury: 0 days",
+		},
+	}
+
+	intent := detectQueryIntent("What does waiting period mean?", "")
+	answer, mode, payload := buildDeterministicAnswer(intent, sources)
+	if mode != "deterministic_waiting_period_single" {
+		t.Fatalf("expected waiting definition mode, got mode=%s answer=%q", mode, answer)
+	}
+	if !strings.Contains(answer, "time that must pass before the listed condition can be claimed") {
+		t.Fatalf("expected evidence-based definition lead, got %q", answer)
+	}
+	if !strings.Contains(answer, "Prudential: illness claims start after 30 days, cancer claims start after 180 days, injury claims start after 7 days") {
+		t.Fatalf("expected Prudential evidence summary, got %q", answer)
+	}
+	if !strings.Contains(answer, "MSIG: illness claims start after 90 days, injury claims start after 0 days") {
+		t.Fatalf("expected MSIG evidence summary, got %q", answer)
+	}
+	if payload["type"] != "waiting_period_single" {
+		t.Fatalf("expected waiting payload type, got %#v", payload["type"])
+	}
+}
+
+func TestBuildDeterministicAnswer_WaitingPeriodDefinitionSingleProviderUsesEvidence(t *testing.T) {
+	sources := []Source{
+		{
+			SourceName: "bluecross.md",
+			Provider:   "bluecross",
+			Clauses:    "27",
+			Snippet:    "Waiting Period\nIllness: 90 days",
+		},
+	}
+
+	intent := detectQueryIntent("What is the meaning of waiting period?", "")
+	answer, mode, _ := buildDeterministicAnswer(intent, sources)
+	if mode != "deterministic_waiting_period_single" {
+		t.Fatalf("expected waiting definition mode, got mode=%s answer=%q", mode, answer)
+	}
+	if !strings.Contains(answer, "time that must pass before the listed condition can be claimed") {
+		t.Fatalf("expected evidence-based definition lead, got %q", answer)
+	}
+	if !strings.Contains(answer, "Blue Cross: illness claims start after 90 days") {
+		t.Fatalf("expected provider evidence summary, got %q", answer)
+	}
+}
+
 func TestBuildDeterministicAnswer_ConsultLimit(t *testing.T) {
 	sources := []Source{
 		{
