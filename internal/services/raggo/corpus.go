@@ -189,10 +189,33 @@ func buildStructuredLimitText(product, subName, subLimit, remark string) string 
 	if strings.TrimSpace(subLimit) != "" {
 		parts = append(parts, "limit "+strings.TrimSpace(subLimit))
 	}
-	if strings.TrimSpace(remark) != "" {
-		parts = append(parts, strings.TrimSpace(remark))
+	if cleanedRemark := sanitizeStructuredRemark(subName, remark); cleanedRemark != "" {
+		parts = append(parts, cleanedRemark)
 	}
 	return strings.Join(parts, ": ")
+}
+
+func sanitizeStructuredRemark(subName, remark string) string {
+	remark = strings.Join(strings.Fields(strings.TrimSpace(remark)), " ")
+	if remark == "" {
+		return ""
+	}
+
+	nameLower := strings.ToLower(strings.TrimSpace(subName))
+	remarkLower := strings.ToLower(remark)
+
+	switch {
+	case strings.Contains(nameLower, "veterinary consultation"):
+		if strings.Contains(remarkLower, "confinement of no less than 12 consecutive hours") {
+			return ""
+		}
+	case strings.Contains(nameLower, "room and board"):
+		if strings.Contains(remarkLower, "consultation fees") || strings.Contains(remarkLower, "max. 20 visits") {
+			return ""
+		}
+	}
+
+	return remark
 }
 
 func normalizeProviderName(name string) string {

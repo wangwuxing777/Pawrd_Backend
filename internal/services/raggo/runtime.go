@@ -63,12 +63,6 @@ type reranker struct {
 }
 
 var tokenSplitRe = regexp.MustCompile(`[^\p{L}\p{N}]+`)
-var providerAliases = map[string][]string{
-	"one_degree": {"one degree", "onedegree", "one_degree"},
-	"bluecross":  {"blue cross", "bluecross", "藍十字", "蓝十字"},
-	"prudential": {"prudential", "保誠", "保诚"},
-	"msig":       {"msig", "三井住友"},
-}
 
 func AnswerQuery(cfg Config, question, provider, language string, maxSources int) AnswerResult {
 	started := time.Now()
@@ -91,7 +85,6 @@ func AnswerQuery(cfg Config, question, provider, language string, maxSources int
 
 	candidates := rankCandidates(chunks, question, provider, language, maxSources)
 	candidates = rerankCandidates(cfg, question, candidates)
-	candidates = rebalanceProviderCoverage(question, provider, candidates)
 	sources := make([]Source, 0, len(candidates))
 	for _, c := range candidates {
 		sources = append(sources, buildSourcePayload(c.chunk, c.score))
@@ -386,53 +379,6 @@ func rerankDocument(ch Chunk) string {
 	return strings.TrimSpace(strings.Join(parts, "\n"))
 }
 
-func rebalanceProviderCoverage(question, provider string, candidates []rankedChunk) []rankedChunk {
-	if strings.TrimSpace(provider) != "" || len(candidates) < 2 {
-		return candidates
-	}
-	targetProviders := inferTargetProviders(question)
-	if len(targetProviders) < 2 {
-		return candidates
-	}
-
-	best := map[string]rankedChunk{}
-	for _, candidate := range candidates {
-		p := candidate.chunk.Metadata["provider"]
-		if p == "" || !sliceContains(targetProviders, p) {
-			continue
-		}
-		if _, ok := best[p]; !ok {
-			best[p] = candidate
-		}
-	}
-	if len(best) < 2 {
-		return candidates
-	}
-
-	prefix := make([]rankedChunk, 0, len(targetProviders))
-	used := map[string]bool{}
-	for _, p := range targetProviders {
-		if candidate, ok := best[p]; ok {
-			prefix = append(prefix, candidate)
-			used[candidate.chunk.Metadata["provider"]+"|"+candidate.chunk.Metadata["source_name"]+"|"+candidate.chunk.Metadata["section_path"]+"|"+candidate.chunk.Text] = true
-		}
-	}
-	if len(prefix) < 2 {
-		return candidates
-	}
-
-	out := make([]rankedChunk, 0, len(candidates))
-	out = append(out, prefix...)
-	for _, candidate := range candidates {
-		key := candidate.chunk.Metadata["provider"] + "|" + candidate.chunk.Metadata["source_name"] + "|" + candidate.chunk.Metadata["section_path"] + "|" + candidate.chunk.Text
-		if used[key] {
-			continue
-		}
-		out = append(out, candidate)
-	}
-	return out
-}
-
 func buildExtractiveFallback(question, provider string, sources []Source) string {
 	lines := make([]string, 0, len(sources)+2)
 	if strings.TrimSpace(provider) != "" {
@@ -598,12 +544,6 @@ func metadataBonus(ch Chunk, tokens []string) float64 {
 	if unitTypes == "definition" {
 		score += 0.35
 	}
-	if containsAny(sectionPath, "table of benefits", "annual limit", "獸醫診症", "veterinary consultation", "room and board", "住院費用") {
-		score += 0.9
-	}
-	if containsAny(topicTags, "limit", "consult") {
-		score += 0.6
-	}
 	return score
 }
 
@@ -718,30 +658,6 @@ func containsAny(s string, terms ...string) bool {
 	return false
 }
 
-func sliceContains(items []string, target string) bool {
-	for _, item := range items {
-		if item == target {
-			return true
-		}
-	}
-	return false
-}
-
-func inferTargetProviders(question string) []string {
-	lower := strings.ToLower(strings.TrimSpace(question))
-	out := make([]string, 0, 2)
-	for provider, aliases := range providerAliases {
-		for _, alias := range aliases {
-			if strings.Contains(lower, strings.ToLower(alias)) {
-				out = append(out, provider)
-				break
-			}
-		}
-	}
-	sort.Strings(out)
-	return out
-}
-
 func BuildCapabilities(cfg Config) map[string]any {
 	meta := readIndexMetadata(cfg.PersistDir)
 	return map[string]any{
@@ -760,10 +676,9 @@ func BuildCapabilities(cfg Config) map[string]any {
 			"query_post":   "/api/rag/go/query",
 		},
 		"summarization": map[string]any{
-			"mode":                  "retrieval_plus_llm_summary",
-			"llm_configured":        strings.TrimSpace(cfg.LLMBaseURL) != "" && strings.TrimSpace(cfg.LLMModel) != "" && strings.TrimSpace(cfg.LLMAPIKey) != "",
-			"extractive_fallback":   true,
-			"deterministic_removed": true,
+			"mode":                "retrieval_plus_llm_summary",
+			"llm_configured":      strings.TrimSpace(cfg.LLMBaseURL) != "" && strings.TrimSpace(cfg.LLMModel) != "" && strings.TrimSpace(cfg.LLMAPIKey) != "",
+			"extractive_fallback": true,
 		},
 		"index": map[string]any{
 			"persist_dir":                cfg.PersistDir,
