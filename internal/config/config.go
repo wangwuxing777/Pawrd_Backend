@@ -45,7 +45,7 @@ func LoadConfig() *Config {
 		GoRAGBaseURL:            strings.TrimSpace(getEnvOrDefault("GO_RAG_BASE_URL", "http://127.0.0.1:8012/api/rag/go")),
 		PythonRAGTimeoutSeconds: getEnvAsIntOrDefault("PYTHON_RAG_TIMEOUT_SECONDS", 90),
 		GoRAGTimeoutSeconds:     getEnvAsIntOrDefault("GO_RAG_TIMEOUT_SECONDS", 90),
-		ChatRAGRuntime:          strings.ToLower(strings.TrimSpace(getEnvOrDefault("CHAT_RAG_RUNTIME", "python"))),
+		ChatRAGRuntime:          strings.ToLower(strings.TrimSpace(getEnvOrDefault("CHAT_RAG_RUNTIME", "go"))),
 		MerchantFacadeBaseURL:   strings.TrimSpace(getEnvOrDefault("MERCHANT_FACADE_BASE_URL", "http://127.0.0.1:8090")),
 		MerchantFacadeAppKey:    strings.TrimSpace(os.Getenv("MERCHANT_FACADE_APP_KEY")),
 		ShopifyDomain:           strings.TrimSpace(os.Getenv("SHOPIFY_DOMAIN")),

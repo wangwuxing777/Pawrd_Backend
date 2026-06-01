@@ -12,13 +12,60 @@ import (
 	"github.com/wangwuxing777/Pawrd_Backend/internal/config"
 )
 
-func TestChatProxyDefaultsToPythonRuntime(t *testing.T) {
-	pythonUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func TestChatProxyDefaultsToGoRuntime(t *testing.T) {
+	goUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/query" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
 		if got := r.URL.Query().Get("provider"); got != "bluecross" {
 			t.Fatalf("expected provider=bluecross, got %q", got)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"answer": "go default answer",
+			"sources": []map[string]any{
+				{
+					"source_name":  "g.md",
+					"clauses":      "1.C",
+					"section_path": "Benefits > Consult",
+				},
+			},
+		})
+	}))
+	defer goUpstream.Close()
+
+	cfg := &config.Config{
+		PythonRAGBaseURL:        "http://127.0.0.1:9",
+		PythonRAGTimeoutSeconds: 5,
+		GoRAGBaseURL:            goUpstream.URL,
+		GoRAGTimeoutSeconds:     5,
+		ChatRAGRuntime:          "",
+	}
+	store := NewChatSessionStore()
+	handler := NewChatProxyHandler(cfg, store)
+
+	body := `{"query":"Blue Cross 包唔包獸醫診症？","model":"insurance","provider":"bluecross"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	handler(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status=200 got=%d body=%s", rr.Code, rr.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if strings.TrimSpace(stringValueFromAny(resp["answer"])) != "go default answer" {
+		t.Fatalf("unexpected answer: %#v", resp["answer"])
+	}
+}
+
+func TestChatProxyUsesPythonWhenConfigured(t *testing.T) {
+	pythonUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/query" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"answer": "python answer",
@@ -38,7 +85,7 @@ func TestChatProxyDefaultsToPythonRuntime(t *testing.T) {
 		PythonRAGTimeoutSeconds: 5,
 		GoRAGBaseURL:            "http://127.0.0.1:9",
 		GoRAGTimeoutSeconds:     5,
-		ChatRAGRuntime:          "",
+		ChatRAGRuntime:          "python",
 	}
 	store := NewChatSessionStore()
 	handler := NewChatProxyHandler(cfg, store)
@@ -63,6 +110,48 @@ func TestChatProxyDefaultsToPythonRuntime(t *testing.T) {
 	sources, _ := resp["sources"].([]any)
 	if len(sources) != 1 {
 		t.Fatalf("expected 1 source got %d", len(sources))
+	}
+}
+
+func TestChatProxyFallsBackToGoWhenPythonUnavailable(t *testing.T) {
+	goUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"answer": "go fallback answer",
+			"sources": []map[string]any{
+				{
+					"source_name":  "g.md",
+					"clauses":      "1.B",
+					"section_path": "Benefits > Room and Board",
+				},
+			},
+		})
+	}))
+	defer goUpstream.Close()
+
+	cfg := &config.Config{
+		PythonRAGBaseURL:        "http://127.0.0.1:9",
+		PythonRAGTimeoutSeconds: 1,
+		GoRAGBaseURL:            goUpstream.URL,
+		GoRAGTimeoutSeconds:     5,
+		ChatRAGRuntime:          "python",
+	}
+	store := NewChatSessionStore()
+	handler := NewChatProxyHandler(cfg, store)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(`{"query":"fallback","model":"insurance","provider":"prudential"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	handler(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected fallback success status=200 got=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if strings.TrimSpace(stringValueFromAny(resp["answer"])) != "go fallback answer" {
+		t.Fatalf("unexpected fallback answer: %#v", resp["answer"])
 	}
 }
 

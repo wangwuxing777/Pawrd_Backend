@@ -12,8 +12,8 @@ Keep `/api/chat` request/response compatibility while allowing controlled runtim
 Environment variable:
 
 - `CHAT_RAG_RUNTIME`
-  - `python` (default)
-  - `go`
+  - `go` (default)
+  - `python`
 
 ## Related config
 
@@ -27,6 +27,7 @@ Environment variable:
 - `/api/chat` keeps the same payload contract.
 - Runtime routing is internal; frontend callers do not need to change.
 - Invalid provider handling remains `400` (compatibility with prior path).
+- If runtime is set to `python` but Python service is unavailable, backend auto-falls back to Go runtime for availability.
 
 ## Local verification
 
@@ -65,4 +66,3 @@ CHAT_RAG_RUNTIME=python
 ```
 
 No frontend rollback needed because API shape is unchanged.
-

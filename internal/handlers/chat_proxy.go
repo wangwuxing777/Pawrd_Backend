@@ -234,6 +234,10 @@ func NewChatProxyHandler(cfg *config.Config, store *chatSessionStore) http.Handl
 			answer, sources, err = goClient.queryInsurance(req.Query, provider)
 		} else {
 			answer, sources, err = pythonClient.queryInsurance(req.Query, provider)
+			if err != nil && strings.Contains(strings.ToLower(err.Error()), "service unavailable") {
+				// Automatic fallback: keep /api/chat alive even if Python sidecar is down.
+				answer, sources, err = goClient.queryInsurance(req.Query, provider)
+			}
 		}
 		if err != nil {
 			status := http.StatusBadGateway
