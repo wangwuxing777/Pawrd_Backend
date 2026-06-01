@@ -68,6 +68,7 @@ type queryIntent struct {
 	isDefinition         bool
 	isComparison         bool
 	isWaitingPeriodFocus bool
+	mentionedProviders   []string
 }
 
 func AnswerQuery(cfg Config, question, provider, language string, maxSources int) AnswerResult {
@@ -423,6 +424,9 @@ func rankCandidates(chunks []Chunk, question, provider, language string, maxSour
 		if provider != "" && ch.Metadata["provider"] != provider {
 			continue
 		}
+		if provider == "" && len(intent.mentionedProviders) > 0 && !containsProvider(intent.mentionedProviders, ch.Metadata["provider"]) {
+			continue
+		}
 		if language != "" && ch.Metadata["language"] != language {
 			continue
 		}
@@ -617,6 +621,7 @@ func detectQueryIntent(question string) queryIntent {
 		) && waitingPeriodFocus) || (strings.HasPrefix(lower, "what is ") && waitingPeriodFocus),
 		isComparison:         containsAny(lower, "compare", "comparison", "vs", "versus", "比較", "对比", "對比"),
 		isWaitingPeriodFocus: waitingPeriodFocus,
+		mentionedProviders:   detectMentionedProviders(lower),
 	}
 }
 
@@ -654,6 +659,25 @@ func diversifyCandidates(candidates []rankedChunk, intent queryIntent) []rankedC
 	}
 
 	if intent.isComparison {
+		seenSummaryProviders := map[string]bool{}
+		for i, candidate := range candidates {
+			if used[i] {
+				continue
+			}
+			if !hasTopicTag(candidate.chunk.Metadata["topic_tags"], "summary") {
+				continue
+			}
+			if intent.isWaitingPeriodFocus && !hasTopicTag(candidate.chunk.Metadata["topic_tags"], "waiting_period") {
+				continue
+			}
+			provider := candidate.chunk.Metadata["provider"]
+			if provider == "" || seenSummaryProviders[provider] {
+				continue
+			}
+			out = append(out, candidate)
+			used[i] = true
+			seenSummaryProviders[provider] = true
+		}
 		seenProviders := map[string]bool{}
 		for i, candidate := range candidates {
 			if used[i] {
@@ -738,6 +762,24 @@ func selectTopCandidates(candidates []rankedChunk, intent queryIntent, maxSource
 	}
 
 	if intent.isComparison {
+		seenSummaryProviders := map[string]bool{}
+		for i, candidate := range candidates {
+			if used[i] || len(selected) >= limit {
+				continue
+			}
+			if !hasTopicTag(candidate.chunk.Metadata["topic_tags"], "summary") {
+				continue
+			}
+			if intent.isWaitingPeriodFocus && !hasTopicTag(candidate.chunk.Metadata["topic_tags"], "waiting_period") {
+				continue
+			}
+			provider := candidate.chunk.Metadata["provider"]
+			if provider == "" || seenSummaryProviders[provider] {
+				continue
+			}
+			appendCandidate(i)
+			seenSummaryProviders[provider] = true
+		}
 		for i, candidate := range candidates {
 			if used[i] || len(selected) >= limit {
 				continue
@@ -885,6 +927,38 @@ func containsAny(s string, terms ...string) bool {
 func hasTopicTag(topicTags, target string) bool {
 	for _, tag := range strings.Split(topicTags, ",") {
 		if strings.TrimSpace(tag) == target {
+			return true
+		}
+	}
+	return false
+}
+
+func detectMentionedProviders(lowerQuestion string) []string {
+	providers := []struct {
+		key   string
+		terms []string
+	}{
+		{key: "bluecross", terms: []string{"blue cross", "bluecross", "藍十字", "蓝十字"}},
+		{key: "prudential", terms: []string{"prudential", "保誠", "保诚"}},
+		{key: "one_degree", terms: []string{"one degree", "onedegree", "one_degree"}},
+		{key: "msig", terms: []string{"msig", "三井住友"}},
+		{key: "bolttech", terms: []string{"bolttech"}},
+	}
+	out := make([]string, 0, 2)
+	for _, provider := range providers {
+		for _, term := range provider.terms {
+			if strings.Contains(lowerQuestion, strings.ToLower(term)) {
+				out = append(out, provider.key)
+				break
+			}
+		}
+	}
+	return out
+}
+
+func containsProvider(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
 			return true
 		}
 	}
