@@ -114,6 +114,72 @@ func TestAnswerQueryUsesLLMSummaryWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestRerankerReordersCandidates(t *testing.T) {
+	rerankServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode rerank request: %v", err)
+		}
+		if payload["query"] != "room and board" {
+			t.Fatalf("unexpected rerank query: %#v", payload["query"])
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"results": []map[string]any{
+				{"index": 1, "relevance_score": 0.99},
+				{"index": 0, "relevance_score": 0.10},
+			},
+		})
+	}))
+	defer rerankServer.Close()
+
+	r := newReranker(Config{
+		RerankEnabled:        true,
+		RerankBaseURL:        rerankServer.URL,
+		RerankModel:          "rerank-model",
+		RerankAPIKey:         "rerank-key",
+		RerankTopN:           2,
+		RerankTimeoutSeconds: 5,
+	})
+	if r == nil {
+		t.Fatalf("expected reranker")
+	}
+
+	candidates := []rankedChunk{
+		{
+			chunk: Chunk{
+				Text: "first candidate",
+				Metadata: map[string]string{
+					"provider":     "prudential",
+					"source_name":  "a.md",
+					"section_path": "Section A",
+				},
+			},
+			score: 1,
+		},
+		{
+			chunk: Chunk{
+				Text: "second candidate",
+				Metadata: map[string]string{
+					"provider":     "prudential",
+					"source_name":  "b.md",
+					"section_path": "Section B",
+				},
+			},
+			score: 1,
+		},
+	}
+	reordered, err := r.rerank("room and board", candidates)
+	if err != nil {
+		t.Fatalf("rerank: %v", err)
+	}
+	if len(reordered) < 2 {
+		t.Fatalf("expected reranked candidates")
+	}
+	if reordered[0].chunk.Metadata["source_name"] != "b.md" {
+		t.Fatalf("expected reranked first source b.md, got %s", reordered[0].chunk.Metadata["source_name"])
+	}
+}
+
 func TestLoadChunks_FromNormalizedCorpus(t *testing.T) {
 	cfg := LoadConfig()
 	chunks, err := LoadChunks(cfg)

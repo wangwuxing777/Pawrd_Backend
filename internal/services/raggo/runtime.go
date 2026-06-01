@@ -54,6 +54,14 @@ type llmSummarizer struct {
 	client  *http.Client
 }
 
+type reranker struct {
+	baseURL string
+	apiKey  string
+	model   string
+	topN    int
+	client  *http.Client
+}
+
 var tokenSplitRe = regexp.MustCompile(`[^\p{L}\p{N}]+`)
 
 func AnswerQuery(cfg Config, question, provider, language string, maxSources int) AnswerResult {
@@ -76,6 +84,7 @@ func AnswerQuery(cfg Config, question, provider, language string, maxSources int
 	}
 
 	candidates := rankCandidates(chunks, question, provider, language, maxSources)
+	candidates = rerankCandidates(cfg, question, candidates)
 	sources := make([]Source, 0, len(candidates))
 	for _, c := range candidates {
 		sources = append(sources, buildSourcePayload(c.chunk, c.score))
@@ -128,6 +137,18 @@ func summarizeSources(cfg Config, question, provider, language string, sources [
 	}
 }
 
+func rerankCandidates(cfg Config, question string, candidates []rankedChunk) []rankedChunk {
+	r := newReranker(cfg)
+	if r == nil || len(candidates) < 2 {
+		return candidates
+	}
+	reordered, err := r.rerank(question, candidates)
+	if err != nil || len(reordered) == 0 {
+		return candidates
+	}
+	return reordered
+}
+
 func newLLMSummarizer(cfg Config) *llmSummarizer {
 	if strings.TrimSpace(cfg.LLMBaseURL) == "" || strings.TrimSpace(cfg.LLMModel) == "" || strings.TrimSpace(cfg.LLMAPIKey) == "" {
 		return nil
@@ -140,6 +161,27 @@ func newLLMSummarizer(cfg Config) *llmSummarizer {
 		baseURL: strings.TrimRight(cfg.LLMBaseURL, "/"),
 		apiKey:  cfg.LLMAPIKey,
 		model:   cfg.LLMModel,
+		client:  &http.Client{Timeout: timeout},
+	}
+}
+
+func newReranker(cfg Config) *reranker {
+	if !cfg.RerankEnabled || strings.TrimSpace(cfg.RerankBaseURL) == "" || strings.TrimSpace(cfg.RerankModel) == "" || strings.TrimSpace(cfg.RerankAPIKey) == "" {
+		return nil
+	}
+	timeout := time.Duration(cfg.RerankTimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 20 * time.Second
+	}
+	topN := cfg.RerankTopN
+	if topN <= 0 {
+		topN = cfg.DefaultMaxSources
+	}
+	return &reranker{
+		baseURL: strings.TrimRight(cfg.RerankBaseURL, "/"),
+		apiKey:  cfg.RerankAPIKey,
+		model:   cfg.RerankModel,
+		topN:    topN,
 		client:  &http.Client{Timeout: timeout},
 	}
 }
@@ -213,6 +255,82 @@ func (s *llmSummarizer) summarize(question, provider, language string, sources [
 	return strings.TrimSpace(parsed.Choices[0].Message.Content), nil
 }
 
+func (r *reranker) rerank(question string, candidates []rankedChunk) ([]rankedChunk, error) {
+	documents := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		documents = append(documents, rerankDocument(c.chunk))
+	}
+	topN := r.topN
+	if topN <= 0 || topN > len(documents) {
+		topN = len(documents)
+	}
+	payload := map[string]any{
+		"model":     r.model,
+		"query":     question,
+		"documents": documents,
+		"top_n":     topN,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequest(http.MethodPost, r.baseURL+"/rerank", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+r.apiKey)
+
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		msg := strings.TrimSpace(string(respBody))
+		if len(msg) > 300 {
+			msg = msg[:300] + "..."
+		}
+		return nil, fmt.Errorf("rerank status %d body=%s", resp.StatusCode, msg)
+	}
+
+	var parsed struct {
+		Results []struct {
+			Index          int     `json:"index"`
+			RelevanceScore float64 `json:"relevance_score"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		return nil, err
+	}
+	if len(parsed.Results) == 0 {
+		return nil, fmt.Errorf("empty rerank results")
+	}
+
+	used := map[int]bool{}
+	out := make([]rankedChunk, 0, len(candidates))
+	for _, item := range parsed.Results {
+		if item.Index < 0 || item.Index >= len(candidates) || used[item.Index] {
+			continue
+		}
+		used[item.Index] = true
+		candidate := candidates[item.Index]
+		candidate.score = candidate.score + item.RelevanceScore*10
+		out = append(out, candidate)
+	}
+	for i, candidate := range candidates {
+		if used[i] {
+			continue
+		}
+		out = append(out, candidate)
+	}
+	return out, nil
+}
+
 func buildSummaryPrompt(question, provider, language string, sources []Source) string {
 	var b strings.Builder
 	b.WriteString("Question: ")
@@ -245,6 +363,20 @@ func buildSummaryPrompt(question, provider, language string, sources []Source) s
 	}
 	b.WriteString("Write a concise answer grounded only in the evidence above. If the evidence does not answer the question, say that explicitly.")
 	return b.String()
+}
+
+func rerankDocument(ch Chunk) string {
+	parts := []string{
+		ch.Metadata["provider"],
+		ch.Metadata["product"],
+		ch.Metadata["source_name"],
+		ch.Metadata["section_path"],
+		ch.Metadata["clauses"],
+		ch.Metadata["unit_types"],
+		ch.Metadata["topic_tags"],
+		ch.Text,
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n"))
 }
 
 func buildExtractiveFallback(question, provider string, sources []Source) string {

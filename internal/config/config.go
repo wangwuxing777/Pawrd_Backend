@@ -24,6 +24,12 @@ type Config struct {
 	RAGLLMModel             string
 	RAGLLMAPIKey            string
 	RAGLLMTimeoutSeconds    int
+	RAGRerankEnabled        bool
+	RAGRerankBaseURL        string
+	RAGRerankModel          string
+	RAGRerankAPIKey         string
+	RAGRerankTopN           int
+	RAGRerankTimeoutSeconds int
 	ChatRAGRuntime          string
 	MerchantFacadeBaseURL   string
 	MerchantFacadeAppKey    string
@@ -53,6 +59,12 @@ func LoadConfig() *Config {
 		RAGLLMModel:             strings.TrimSpace(getEnvOrDefault("HK_INSURANCE_RAG_LLM_MODEL", "")),
 		RAGLLMAPIKey:            strings.TrimSpace(os.Getenv("HK_INSURANCE_RAG_LLM_API_KEY")),
 		RAGLLMTimeoutSeconds:    getEnvAsIntOrDefault("HK_INSURANCE_RAG_LLM_TIMEOUT_SECONDS", 45),
+		RAGRerankEnabled:        getEnvAsBoolOrDefault("HK_INSURANCE_RAG_RERANK_ENABLED", false),
+		RAGRerankBaseURL:        strings.TrimSpace(getEnvOrDefault("HK_INSURANCE_RAG_RERANK_BASE_URL", "")),
+		RAGRerankModel:          strings.TrimSpace(getEnvOrDefault("HK_INSURANCE_RAG_RERANK_MODEL", "")),
+		RAGRerankAPIKey:         strings.TrimSpace(os.Getenv("HK_INSURANCE_RAG_RERANK_API_KEY")),
+		RAGRerankTopN:           getEnvAsIntOrDefault("HK_INSURANCE_RAG_RERANK_TOP_N", 6),
+		RAGRerankTimeoutSeconds: getEnvAsIntOrDefault("HK_INSURANCE_RAG_RERANK_TIMEOUT_SECONDS", 20),
 		ChatRAGRuntime:          strings.ToLower(strings.TrimSpace(getEnvOrDefault("CHAT_RAG_RUNTIME", "go"))),
 		MerchantFacadeBaseURL:   strings.TrimSpace(getEnvOrDefault("MERCHANT_FACADE_BASE_URL", "http://127.0.0.1:8090")),
 		MerchantFacadeAppKey:    strings.TrimSpace(os.Getenv("MERCHANT_FACADE_APP_KEY")),
@@ -104,4 +116,19 @@ func getEnvAsIntOrDefault(key string, defaultValue int) int {
 		return defaultValue
 	}
 	return parsed
+}
+
+func getEnvAsBoolOrDefault(key string, defaultValue bool) bool {
+	val := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+	if val == "" {
+		return defaultValue
+	}
+	switch val {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return defaultValue
+	}
 }

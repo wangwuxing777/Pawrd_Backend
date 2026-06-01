@@ -8,14 +8,20 @@ import (
 )
 
 type Config struct {
-	DataPath          string
-	PersistDir        string
-	DefaultMaxSources int
-	MaxAllowedSources int
-	LLMBaseURL        string
-	LLMModel          string
-	LLMAPIKey         string
-	LLMTimeoutSeconds int
+	DataPath             string
+	PersistDir           string
+	DefaultMaxSources    int
+	MaxAllowedSources    int
+	LLMBaseURL           string
+	LLMModel             string
+	LLMAPIKey            string
+	LLMTimeoutSeconds    int
+	RerankEnabled        bool
+	RerankBaseURL        string
+	RerankModel          string
+	RerankAPIKey         string
+	RerankTopN           int
+	RerankTimeoutSeconds int
 }
 
 func LoadConfig() Config {
@@ -49,14 +55,20 @@ func LoadConfig() Config {
 	}
 
 	return Config{
-		DataPath:          dataPath,
-		PersistDir:        persistDir,
-		DefaultMaxSources: maxSources,
-		MaxAllowedSources: maxSources,
-		LLMBaseURL:        strings.TrimSpace(os.Getenv("HK_INSURANCE_RAG_LLM_BASE_URL")),
-		LLMModel:          strings.TrimSpace(os.Getenv("HK_INSURANCE_RAG_LLM_MODEL")),
-		LLMAPIKey:         strings.TrimSpace(os.Getenv("HK_INSURANCE_RAG_LLM_API_KEY")),
-		LLMTimeoutSeconds: envInt("HK_INSURANCE_RAG_LLM_TIMEOUT_SECONDS", 45),
+		DataPath:             dataPath,
+		PersistDir:           persistDir,
+		DefaultMaxSources:    maxSources,
+		MaxAllowedSources:    maxSources,
+		LLMBaseURL:           strings.TrimSpace(os.Getenv("HK_INSURANCE_RAG_LLM_BASE_URL")),
+		LLMModel:             strings.TrimSpace(os.Getenv("HK_INSURANCE_RAG_LLM_MODEL")),
+		LLMAPIKey:            strings.TrimSpace(os.Getenv("HK_INSURANCE_RAG_LLM_API_KEY")),
+		LLMTimeoutSeconds:    envInt("HK_INSURANCE_RAG_LLM_TIMEOUT_SECONDS", 45),
+		RerankEnabled:        envBool("HK_INSURANCE_RAG_RERANK_ENABLED", false),
+		RerankBaseURL:        strings.TrimSpace(os.Getenv("HK_INSURANCE_RAG_RERANK_BASE_URL")),
+		RerankModel:          strings.TrimSpace(os.Getenv("HK_INSURANCE_RAG_RERANK_MODEL")),
+		RerankAPIKey:         strings.TrimSpace(os.Getenv("HK_INSURANCE_RAG_RERANK_API_KEY")),
+		RerankTopN:           envInt("HK_INSURANCE_RAG_RERANK_TOP_N", maxSources),
+		RerankTimeoutSeconds: envInt("HK_INSURANCE_RAG_RERANK_TIMEOUT_SECONDS", 20),
 	}
 }
 
@@ -90,4 +102,19 @@ func envInt(name string, fallback int) int {
 		return fallback
 	}
 	return v
+}
+
+func envBool(name string, fallback bool) bool {
+	raw := strings.TrimSpace(strings.ToLower(os.Getenv(name)))
+	if raw == "" {
+		return fallback
+	}
+	switch raw {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
+	}
 }

@@ -92,6 +92,12 @@ func newGoRAGClient(cfg *config.Config) *goRAGClient {
 	ragCfg.LLMModel = cfg.RAGLLMModel
 	ragCfg.LLMAPIKey = cfg.RAGLLMAPIKey
 	ragCfg.LLMTimeoutSeconds = cfg.RAGLLMTimeoutSeconds
+	ragCfg.RerankEnabled = cfg.RAGRerankEnabled
+	ragCfg.RerankBaseURL = cfg.RAGRerankBaseURL
+	ragCfg.RerankModel = cfg.RAGRerankModel
+	ragCfg.RerankAPIKey = cfg.RAGRerankAPIKey
+	ragCfg.RerankTopN = cfg.RAGRerankTopN
+	ragCfg.RerankTimeoutSeconds = cfg.RAGRerankTimeoutSeconds
 	return &goRAGClient{
 		baseURL: strings.TrimRight(cfg.GoRAGBaseURL, "/"),
 		client: &http.Client{
