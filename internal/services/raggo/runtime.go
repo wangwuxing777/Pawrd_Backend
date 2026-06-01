@@ -632,6 +632,16 @@ func diversifyCandidates(candidates []rankedChunk, intent queryIntent) []rankedC
 
 	out := make([]rankedChunk, 0, len(candidates))
 	used := make([]bool, len(candidates))
+	seenKeys := map[string]bool{}
+	appendCandidate := func(i int) {
+		key := candidateKey(candidates[i])
+		if seenKeys[key] {
+			return
+		}
+		out = append(out, candidates[i])
+		used[i] = true
+		seenKeys[key] = true
+	}
 
 	if intent.isDefinition || intent.isWaitingPeriodFocus {
 		for _, want := range []struct {
@@ -651,8 +661,7 @@ func diversifyCandidates(candidates []rankedChunk, intent queryIntent) []rankedC
 				if want.requireTag != "" && !hasTopicTag(candidate.chunk.Metadata["topic_tags"], want.requireTag) {
 					continue
 				}
-				out = append(out, candidate)
-				used[i] = true
+				appendCandidate(i)
 				break
 			}
 		}
@@ -674,11 +683,14 @@ func diversifyCandidates(candidates []rankedChunk, intent queryIntent) []rankedC
 			if provider == "" || seenSummaryProviders[provider] {
 				continue
 			}
-			out = append(out, candidate)
-			used[i] = true
+			appendCandidate(i)
 			seenSummaryProviders[provider] = true
 		}
+
 		seenProviders := map[string]bool{}
+		for _, candidate := range out {
+			seenProviders[candidate.chunk.Metadata["provider"]] = true
+		}
 		for i, candidate := range candidates {
 			if used[i] {
 				continue
@@ -687,26 +699,19 @@ func diversifyCandidates(candidates []rankedChunk, intent queryIntent) []rankedC
 			if provider == "" || seenProviders[provider] {
 				continue
 			}
-			out = append(out, candidate)
-			used[i] = true
+			appendCandidate(i)
 			seenProviders[provider] = true
 		}
 	}
 
-	seenKeys := map[string]bool{}
-	for _, candidate := range out {
-		seenKeys[candidate.chunk.Metadata["provider"]+"|"+candidate.chunk.Metadata["section_path"]+"|"+candidate.chunk.Metadata["source_name"]] = true
-	}
 	for i, candidate := range candidates {
 		if used[i] {
 			continue
 		}
-		key := candidate.chunk.Metadata["provider"] + "|" + candidate.chunk.Metadata["section_path"] + "|" + candidate.chunk.Metadata["source_name"]
-		if seenKeys[key] {
+		if intent.isWaitingPeriodFocus && !waitingPeriodCandidate(candidate) {
 			continue
 		}
-		out = append(out, candidate)
-		seenKeys[key] = true
+		appendCandidate(i)
 	}
 	return out
 }
@@ -725,15 +730,20 @@ func selectTopCandidates(candidates []rankedChunk, intent queryIntent, maxSource
 
 	selected := make([]rankedChunk, 0, limit)
 	used := make([]bool, len(candidates))
-	seenSection := map[string]bool{}
-	seenProvider := map[string]bool{}
-
-	appendCandidate := func(i int) {
+	seenKeys := map[string]bool{}
+	seenProviders := map[string]bool{}
+	appendCandidate := func(i int) bool {
+		key := candidateKey(candidates[i])
+		if seenKeys[key] {
+			return false
+		}
 		selected = append(selected, candidates[i])
 		used[i] = true
-		seenProvider[candidates[i].chunk.Metadata["provider"]] = true
-		sectionKey := candidates[i].chunk.Metadata["provider"] + "|" + candidates[i].chunk.Metadata["section_path"] + "|" + candidates[i].chunk.Metadata["source_name"]
-		seenSection[sectionKey] = true
+		seenKeys[key] = true
+		if provider := candidates[i].chunk.Metadata["provider"]; provider != "" {
+			seenProviders[provider] = true
+		}
+		return true
 	}
 
 	if intent.isDefinition || intent.isWaitingPeriodFocus {
@@ -755,8 +765,9 @@ func selectTopCandidates(candidates []rankedChunk, intent queryIntent, maxSource
 				if want.requireTag != "" && !hasTopicTag(candidate.chunk.Metadata["topic_tags"], want.requireTag) {
 					continue
 				}
-				appendCandidate(i)
-				break
+				if appendCandidate(i) {
+					break
+				}
 			}
 		}
 	}
@@ -774,18 +785,19 @@ func selectTopCandidates(candidates []rankedChunk, intent queryIntent, maxSource
 				continue
 			}
 			provider := candidate.chunk.Metadata["provider"]
-			if provider == "" || seenSummaryProviders[provider] {
+			if provider == "" || seenProviders[provider] || seenSummaryProviders[provider] {
 				continue
 			}
-			appendCandidate(i)
-			seenSummaryProviders[provider] = true
+			if appendCandidate(i) {
+				seenSummaryProviders[provider] = true
+			}
 		}
 		for i, candidate := range candidates {
 			if used[i] || len(selected) >= limit {
 				continue
 			}
 			provider := candidate.chunk.Metadata["provider"]
-			if provider == "" || seenProvider[provider] {
+			if provider == "" || seenProviders[provider] {
 				continue
 			}
 			appendCandidate(i)
@@ -796,21 +808,16 @@ func selectTopCandidates(candidates []rankedChunk, intent queryIntent, maxSource
 		if used[i] || len(selected) >= limit {
 			continue
 		}
-		sectionKey := candidate.chunk.Metadata["provider"] + "|" + candidate.chunk.Metadata["section_path"] + "|" + candidate.chunk.Metadata["source_name"]
-		if seenSection[sectionKey] {
+		if intent.isWaitingPeriodFocus && !waitingPeriodCandidate(candidate) {
 			continue
 		}
 		appendCandidate(i)
 	}
-
-	for i := range candidates {
-		if used[i] || len(selected) >= limit {
-			continue
-		}
-		appendCandidate(i)
-	}
-
 	return selected
+}
+
+func candidateKey(candidate rankedChunk) string {
+	return candidate.chunk.Metadata["provider"] + "|" + candidate.chunk.Metadata["section_path"] + "|" + candidate.chunk.Metadata["source_name"] + "|" + candidate.chunk.Metadata["language"]
 }
 
 func buildSourcePayload(ch Chunk, score float64) Source {
@@ -931,6 +938,36 @@ func hasTopicTag(topicTags, target string) bool {
 		}
 	}
 	return false
+}
+
+func waitingPeriodCandidate(candidate rankedChunk) bool {
+	if candidate.chunk.Metadata["unit_types"] == "definition" {
+		return true
+	}
+	if hasTopicTag(candidate.chunk.Metadata["topic_tags"], "waiting_period") {
+		return true
+	}
+	return containsAny(strings.ToLower(candidate.chunk.Metadata["section_path"]), "waiting period", "等候期")
+}
+
+func seenProvider(used []bool, candidates []rankedChunk, provider string) bool {
+	for i, usedCandidate := range used {
+		if !usedCandidate {
+			continue
+		}
+		if candidates[i].chunk.Metadata["provider"] == provider {
+			return true
+		}
+	}
+	return false
+}
+
+func selectedProviders(selected []rankedChunk) []bool {
+	flags := make([]bool, len(selected))
+	for i := range selected {
+		flags[i] = true
+	}
+	return flags
 }
 
 func detectMentionedProviders(lowerQuestion string) []string {
