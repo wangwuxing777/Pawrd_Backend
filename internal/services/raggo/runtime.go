@@ -419,6 +419,10 @@ func buildExtractiveFallback(question, provider string, sources []Source) string
 func rankCandidates(chunks []Chunk, question, provider, language string, maxSources int) []rankedChunk {
 	tokens := tokenize(question)
 	intent := detectQueryIntent(question)
+	queryLanguage := language
+	if strings.TrimSpace(queryLanguage) == "" {
+		queryLanguage = inferQueryLanguage(question)
+	}
 	out := make([]rankedChunk, 0, 64)
 	for _, ch := range chunks {
 		if provider != "" && ch.Metadata["provider"] != provider {
@@ -441,6 +445,9 @@ func rankCandidates(chunks []Chunk, question, provider, language string, maxSour
 		}, "\n"))
 		score := lexicalScore(searchText, tokens)
 		score += metadataBonus(ch, tokens, intent)
+		if queryLanguage != "" && ch.Metadata["language"] == queryLanguage {
+			score += 0.8
+		}
 		if score <= 0 {
 			continue
 		}
@@ -856,6 +863,13 @@ func formatIntent(question, provider, language string) string {
 		parts = append(parts, "empty_question")
 	}
 	return strings.Join(parts, ", ")
+}
+
+func inferQueryLanguage(question string) string {
+	if containsHan(question) {
+		return "zh"
+	}
+	return "en"
 }
 
 func defaultDisclaimer() string {
