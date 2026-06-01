@@ -299,6 +299,7 @@ func rankCandidates(chunks []Chunk, question, provider, language string, maxSour
 			ch.Metadata["topic_tags"],
 		}, "\n"))
 		score := lexicalScore(searchText, tokens)
+		score += metadataBonus(ch, tokens)
 		if score <= 0 {
 			continue
 		}
@@ -328,16 +329,36 @@ func rankCandidates(chunks []Chunk, question, provider, language string, maxSour
 }
 
 func tokenize(question string) []string {
-	raw := tokenSplitRe.Split(strings.ToLower(strings.TrimSpace(question)), -1)
-	out := make([]string, 0, len(raw))
+	normalized := strings.ToLower(strings.TrimSpace(question))
+	raw := tokenSplitRe.Split(normalized, -1)
+	out := make([]string, 0, len(raw)*2)
 	seen := map[string]bool{}
 	for _, token := range raw {
 		token = strings.TrimSpace(token)
-		if token == "" || len(token) == 1 || seen[token] {
+		if token == "" || seen[token] {
+			continue
+		}
+		if len(token) == 1 && !containsHan(token) {
 			continue
 		}
 		seen[token] = true
 		out = append(out, token)
+	}
+	for _, run := range hanRuns(normalized) {
+		if len([]rune(run)) < 2 {
+			if !seen[run] {
+				seen[run] = true
+				out = append(out, run)
+			}
+			continue
+		}
+		for _, token := range hanNGrams(run, 2, 4) {
+			if seen[token] {
+				continue
+			}
+			seen[token] = true
+			out = append(out, token)
+		}
 	}
 	return out
 }
@@ -353,6 +374,49 @@ func lexicalScore(text string, tokens []string) float64 {
 			continue
 		}
 		score += 1 + math.Min(float64(count-1), 2)*0.25
+	}
+	return score
+}
+
+func metadataBonus(ch Chunk, tokens []string) float64 {
+	provider := strings.ToLower(ch.Metadata["provider"])
+	product := strings.ToLower(ch.Metadata["product"])
+	sourceName := strings.ToLower(ch.Metadata["source_name"])
+	sectionPath := strings.ToLower(ch.Metadata["section_path"])
+	clauses := strings.ToLower(ch.Metadata["clauses"])
+	unitTypes := strings.ToLower(ch.Metadata["unit_types"])
+	topicTags := strings.ToLower(ch.Metadata["topic_tags"])
+	fields := []string{provider, product, sourceName, sectionPath, clauses, unitTypes, topicTags}
+	score := 0.0
+	for _, token := range tokens {
+		for i, field := range fields {
+			if field == "" || !strings.Contains(field, token) {
+				continue
+			}
+			switch i {
+			case 3:
+				score += 1.5
+			case 6:
+				score += 1.2
+			default:
+				score += 0.6
+			}
+		}
+	}
+	if containsAny(sectionPath, "claims provisions", "proof and documentation", "abandoned claims", "general conditions", "一般條款", "一般不保事項") {
+		score -= 1.4
+	}
+	if unitTypes == "benefit" {
+		score += 0.8
+	}
+	if unitTypes == "definition" {
+		score += 0.35
+	}
+	if containsAny(sectionPath, "table of benefits", "annual limit", "獸醫診症", "veterinary consultation", "room and board", "住院費用") {
+		score += 0.9
+	}
+	if containsAny(topicTags, "limit", "consult") {
+		score += 0.6
 	}
 	return score
 }
@@ -399,11 +463,73 @@ func defaultDisclaimer() string {
 	return "仅供参考，不保证 100% 准确、完整或最新。最终以保险公司官网、正式保单、承保表、批单及最新书面说明为准。"
 }
 
+func containsHan(s string) bool {
+	for _, r := range s {
+		if r >= 0x4E00 && r <= 0x9FFF {
+			return true
+		}
+	}
+	return false
+}
+
+func hanRuns(s string) []string {
+	runs := make([]string, 0, 4)
+	buf := make([]rune, 0, 16)
+	flush := func() {
+		if len(buf) == 0 {
+			return
+		}
+		runs = append(runs, string(buf))
+		buf = buf[:0]
+	}
+	for _, r := range s {
+		if r >= 0x4E00 && r <= 0x9FFF {
+			buf = append(buf, r)
+			continue
+		}
+		flush()
+	}
+	flush()
+	return runs
+}
+
+func hanNGrams(s string, minN, maxN int) []string {
+	runes := []rune(s)
+	if len(runes) == 0 {
+		return nil
+	}
+	if minN < 1 {
+		minN = 1
+	}
+	if maxN < minN {
+		maxN = minN
+	}
+	out := make([]string, 0, len(runes)*2)
+	for n := minN; n <= maxN; n++ {
+		if n > len(runes) {
+			break
+		}
+		for i := 0; i+n <= len(runes); i++ {
+			out = append(out, string(runes[i:i+n]))
+		}
+	}
+	return out
+}
+
 func valueOr(v, fallback string) string {
 	if strings.TrimSpace(v) == "" {
 		return fallback
 	}
 	return v
+}
+
+func containsAny(s string, terms ...string) bool {
+	for _, term := range terms {
+		if strings.Contains(s, term) {
+			return true
+		}
+	}
+	return false
 }
 
 func BuildCapabilities(cfg Config) map[string]any {
