@@ -94,7 +94,8 @@ func loadStructuredInsuranceChunks(cfg Config) ([]Chunk, error) {
 				provider, "en", insuranceName, "structured_product_waiting_period",
 				"Structured Product Data > Waiting Period",
 				strconv.Itoa(insuranceID),
-				"structured_product,waiting_period,limit",
+				"waiting_period",
+				"structured_product,waiting_period",
 				insuranceName+": waiting period "+strings.TrimSpace(waitingPeriod.String),
 			))
 		}
@@ -107,7 +108,8 @@ func loadStructuredInsuranceChunks(cfg Config) ([]Chunk, error) {
 				provider, "zh", productTitle, "structured_product_waiting_period",
 				"Structured Product Data > 等候期",
 				strconv.Itoa(insuranceID),
-				"structured_product,waiting_period,limit",
+				"waiting_period",
+				"structured_product,waiting_period",
 				productTitle+"：等候期 "+strings.TrimSpace(waitingPeriodZh.String),
 			))
 		}
@@ -142,6 +144,7 @@ func loadStructuredInsuranceChunks(cfg Config) ([]Chunk, error) {
 				provider, "en", insuranceName, "structured_sub_coverage_limit",
 				"Structured Product Data > Coverage Limits > "+subName,
 				strconv.Itoa(parentCoverageID),
+				"benefit",
 				"structured_product,limit,benefit",
 				text,
 			))
@@ -156,6 +159,7 @@ func loadStructuredInsuranceChunks(cfg Config) ([]Chunk, error) {
 				provider, "zh", productTitle, "structured_sub_coverage_limit",
 				"Structured Product Data > 保障限額 > "+subNameZh,
 				strconv.Itoa(parentCoverageID),
+				"benefit",
 				"structured_product,limit,benefit",
 				text,
 			))
@@ -166,7 +170,7 @@ func loadStructuredInsuranceChunks(cfg Config) ([]Chunk, error) {
 	return chunks, nil
 }
 
-func buildStructuredChunk(provider, language, product, sourceName, sectionPath, clause, topicTags, text string) Chunk {
+func buildStructuredChunk(provider, language, product, sourceName, sectionPath, clause, unitType, topicTags, text string) Chunk {
 	return Chunk{
 		Text: strings.TrimSpace(text),
 		Metadata: map[string]string{
@@ -178,7 +182,7 @@ func buildStructuredChunk(provider, language, product, sourceName, sectionPath, 
 			"policy_type":  "pet_insurance",
 			"section_path": sectionPath,
 			"clauses":      clause,
-			"unit_types":   "structured_limit",
+			"unit_types":   unitType,
 			"topic_tags":   topicTags,
 		},
 	}

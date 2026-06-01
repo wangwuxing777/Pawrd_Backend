@@ -64,6 +64,11 @@ type reranker struct {
 
 var tokenSplitRe = regexp.MustCompile(`[^\p{L}\p{N}]+`)
 
+type queryIntent struct {
+	isDefinition bool
+	isComparison bool
+}
+
 func AnswerQuery(cfg Config, question, provider, language string, maxSources int) AnswerResult {
 	started := time.Now()
 	question = strings.TrimSpace(question)
@@ -85,12 +90,10 @@ func AnswerQuery(cfg Config, question, provider, language string, maxSources int
 
 	candidates := rankCandidates(chunks, question, provider, language, maxSources)
 	candidates = rerankCandidates(cfg, question, candidates)
+	candidates = selectTopCandidates(candidates, detectQueryIntent(question), maxSources)
 	sources := make([]Source, 0, len(candidates))
 	for _, c := range candidates {
 		sources = append(sources, buildSourcePayload(c.chunk, c.score))
-	}
-	if maxSources > 0 && len(sources) > maxSources {
-		sources = sources[:maxSources]
 	}
 
 	answer, mode, structured := summarizeSources(cfg, question, provider, language, sources)
@@ -413,6 +416,7 @@ func buildExtractiveFallback(question, provider string, sources []Source) string
 
 func rankCandidates(chunks []Chunk, question, provider, language string, maxSources int) []rankedChunk {
 	tokens := tokenize(question)
+	intent := detectQueryIntent(question)
 	out := make([]rankedChunk, 0, 64)
 	for _, ch := range chunks {
 		if provider != "" && ch.Metadata["provider"] != provider {
@@ -431,7 +435,7 @@ func rankCandidates(chunks []Chunk, question, provider, language string, maxSour
 			ch.Metadata["topic_tags"],
 		}, "\n"))
 		score := lexicalScore(searchText, tokens)
-		score += metadataBonus(ch, tokens)
+		score += metadataBonus(ch, tokens, intent)
 		if score <= 0 {
 			continue
 		}
@@ -457,6 +461,7 @@ func rankCandidates(chunks []Chunk, question, provider, language string, maxSour
 	if len(out) > limit {
 		out = out[:limit]
 	}
+	out = diversifyCandidates(out, intent)
 	return out
 }
 
@@ -510,7 +515,7 @@ func lexicalScore(text string, tokens []string) float64 {
 	return score
 }
 
-func metadataBonus(ch Chunk, tokens []string) float64 {
+func metadataBonus(ch Chunk, tokens []string, intent queryIntent) float64 {
 	provider := strings.ToLower(ch.Metadata["provider"])
 	product := strings.ToLower(ch.Metadata["product"])
 	sourceName := strings.ToLower(ch.Metadata["source_name"])
@@ -544,7 +549,175 @@ func metadataBonus(ch Chunk, tokens []string) float64 {
 	if unitTypes == "definition" {
 		score += 0.35
 	}
+	if unitTypes == "waiting_period" {
+		score += 0.2
+	}
+	if intent.isDefinition {
+		if unitTypes == "definition" {
+			score += 3.5
+		}
+		if containsAny(topicTags, "waiting_period") {
+			score += 1.2
+		}
+		if containsAny(sectionPath, "definitions", "definition", "定義", "釋義") {
+			score += 1.5
+		}
+		if unitTypes == "benefit" {
+			score -= 0.4
+		}
+	}
+	if intent.isComparison {
+		if unitTypes == "benefit" {
+			score += 0.3
+		}
+		if containsAny(topicTags, "limit") {
+			score += 0.4
+		}
+	}
 	return score
+}
+
+func detectQueryIntent(question string) queryIntent {
+	lower := strings.ToLower(strings.TrimSpace(question))
+	return queryIntent{
+		isDefinition: containsAny(lower,
+			"meaning of", "what is", "what does", "define", "definition",
+			"意思", "係咩", "是什么", "是什麼", "定義",
+		) && containsAny(lower, "waiting period", "等候期"),
+		isComparison: containsAny(lower, "compare", "comparison", "vs", "versus", "比較", "对比", "對比"),
+	}
+}
+
+func diversifyCandidates(candidates []rankedChunk, intent queryIntent) []rankedChunk {
+	if len(candidates) < 3 || (!intent.isDefinition && !intent.isComparison) {
+		return candidates
+	}
+
+	out := make([]rankedChunk, 0, len(candidates))
+	used := make([]bool, len(candidates))
+
+	if intent.isDefinition {
+		for _, desiredUnit := range []string{"definition", "waiting_period"} {
+			for i, candidate := range candidates {
+				if used[i] {
+					continue
+				}
+				if candidate.chunk.Metadata["unit_types"] != desiredUnit {
+					continue
+				}
+				out = append(out, candidate)
+				used[i] = true
+				break
+			}
+		}
+	}
+
+	if intent.isComparison {
+		seenProviders := map[string]bool{}
+		for i, candidate := range candidates {
+			if used[i] {
+				continue
+			}
+			provider := candidate.chunk.Metadata["provider"]
+			if provider == "" || seenProviders[provider] {
+				continue
+			}
+			out = append(out, candidate)
+			used[i] = true
+			seenProviders[provider] = true
+		}
+	}
+
+	seenKeys := map[string]bool{}
+	for _, candidate := range out {
+		seenKeys[candidate.chunk.Metadata["provider"]+"|"+candidate.chunk.Metadata["section_path"]+"|"+candidate.chunk.Metadata["source_name"]] = true
+	}
+	for i, candidate := range candidates {
+		if used[i] {
+			continue
+		}
+		key := candidate.chunk.Metadata["provider"] + "|" + candidate.chunk.Metadata["section_path"] + "|" + candidate.chunk.Metadata["source_name"]
+		if seenKeys[key] {
+			continue
+		}
+		out = append(out, candidate)
+		seenKeys[key] = true
+	}
+	return out
+}
+
+func selectTopCandidates(candidates []rankedChunk, intent queryIntent, maxSources int) []rankedChunk {
+	if len(candidates) == 0 {
+		return candidates
+	}
+	limit := maxSources
+	if limit <= 0 || limit > len(candidates) {
+		limit = len(candidates)
+	}
+	if limit >= len(candidates) {
+		return candidates
+	}
+
+	selected := make([]rankedChunk, 0, limit)
+	used := make([]bool, len(candidates))
+	seenSection := map[string]bool{}
+	seenProvider := map[string]bool{}
+
+	appendCandidate := func(i int) {
+		selected = append(selected, candidates[i])
+		used[i] = true
+		seenProvider[candidates[i].chunk.Metadata["provider"]] = true
+		sectionKey := candidates[i].chunk.Metadata["provider"] + "|" + candidates[i].chunk.Metadata["section_path"] + "|" + candidates[i].chunk.Metadata["source_name"]
+		seenSection[sectionKey] = true
+	}
+
+	if intent.isDefinition {
+		for _, desiredUnit := range []string{"definition", "waiting_period"} {
+			for i, candidate := range candidates {
+				if used[i] || len(selected) >= limit {
+					continue
+				}
+				if candidate.chunk.Metadata["unit_types"] != desiredUnit {
+					continue
+				}
+				appendCandidate(i)
+				break
+			}
+		}
+	}
+
+	if intent.isComparison {
+		for i, candidate := range candidates {
+			if used[i] || len(selected) >= limit {
+				continue
+			}
+			provider := candidate.chunk.Metadata["provider"]
+			if provider == "" || seenProvider[provider] {
+				continue
+			}
+			appendCandidate(i)
+		}
+	}
+
+	for i, candidate := range candidates {
+		if used[i] || len(selected) >= limit {
+			continue
+		}
+		sectionKey := candidate.chunk.Metadata["provider"] + "|" + candidate.chunk.Metadata["section_path"] + "|" + candidate.chunk.Metadata["source_name"]
+		if seenSection[sectionKey] {
+			continue
+		}
+		appendCandidate(i)
+	}
+
+	for i := range candidates {
+		if used[i] || len(selected) >= limit {
+			continue
+		}
+		appendCandidate(i)
+	}
+
+	return selected
 }
 
 func buildSourcePayload(ch Chunk, score float64) Source {

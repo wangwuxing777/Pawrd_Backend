@@ -203,3 +203,73 @@ func TestLoadConfig_FallsBackToNormalizedCorpusWhenEnvPathMissing(t *testing.T) 
 		t.Fatalf("expected fallback to normalized corpus path, got %s", cfg.DataPath)
 	}
 }
+
+func TestDetectQueryIntent(t *testing.T) {
+	intent := detectQueryIntent("What is the meaning of waiting period?")
+	if !intent.isDefinition || intent.isComparison {
+		t.Fatalf("unexpected definition intent: %+v", intent)
+	}
+
+	intent = detectQueryIntent("Compare Blue Cross and Prudential veterinary consultation limits.")
+	if !intent.isComparison || intent.isDefinition {
+		t.Fatalf("unexpected comparison intent: %+v", intent)
+	}
+}
+
+func TestDiversifyCandidatesDefinitionPromotesDefinitionEvidence(t *testing.T) {
+	candidates := []rankedChunk{
+		{chunk: Chunk{Metadata: map[string]string{"unit_types": "benefit", "provider": "a", "section_path": "Benefits", "source_name": "benefit.md"}}, score: 10},
+		{chunk: Chunk{Metadata: map[string]string{"unit_types": "definition", "provider": "b", "section_path": "Definitions", "source_name": "definition.md"}}, score: 9},
+		{chunk: Chunk{Metadata: map[string]string{"unit_types": "waiting_period", "provider": "c", "section_path": "Structured Waiting", "source_name": "waiting.md"}}, score: 8},
+	}
+
+	got := diversifyCandidates(candidates, queryIntent{isDefinition: true})
+	if len(got) < 2 {
+		t.Fatalf("expected diversified candidates")
+	}
+	if got[0].chunk.Metadata["unit_types"] != "definition" {
+		t.Fatalf("expected definition first, got %s", got[0].chunk.Metadata["unit_types"])
+	}
+	if got[1].chunk.Metadata["unit_types"] != "waiting_period" {
+		t.Fatalf("expected waiting_period second, got %s", got[1].chunk.Metadata["unit_types"])
+	}
+}
+
+func TestDiversifyCandidatesComparisonPromotesProviderCoverage(t *testing.T) {
+	candidates := []rankedChunk{
+		{chunk: Chunk{Metadata: map[string]string{"provider": "prudential", "section_path": "A", "source_name": "1.md"}}, score: 10},
+		{chunk: Chunk{Metadata: map[string]string{"provider": "prudential", "section_path": "B", "source_name": "2.md"}}, score: 9},
+		{chunk: Chunk{Metadata: map[string]string{"provider": "bluecross", "section_path": "C", "source_name": "3.md"}}, score: 8},
+	}
+
+	got := diversifyCandidates(candidates, queryIntent{isComparison: true})
+	if len(got) < 2 {
+		t.Fatalf("expected diversified candidates")
+	}
+	if got[0].chunk.Metadata["provider"] != "prudential" {
+		t.Fatalf("expected first provider to preserve top-ranked source, got %s", got[0].chunk.Metadata["provider"])
+	}
+	if got[1].chunk.Metadata["provider"] != "bluecross" {
+		t.Fatalf("expected second provider to diversify coverage, got %s", got[1].chunk.Metadata["provider"])
+	}
+}
+
+func TestSelectTopCandidatesComparisonKeepsProviderCoverageWithinLimit(t *testing.T) {
+	candidates := []rankedChunk{
+		{chunk: Chunk{Metadata: map[string]string{"provider": "prudential", "section_path": "A", "source_name": "1.md"}}, score: 10},
+		{chunk: Chunk{Metadata: map[string]string{"provider": "prudential", "section_path": "B", "source_name": "2.md"}}, score: 9},
+		{chunk: Chunk{Metadata: map[string]string{"provider": "bluecross", "section_path": "C", "source_name": "3.md"}}, score: 8},
+		{chunk: Chunk{Metadata: map[string]string{"provider": "bluecross", "section_path": "D", "source_name": "4.md"}}, score: 7},
+	}
+
+	got := selectTopCandidates(candidates, queryIntent{isComparison: true}, 3)
+	if len(got) != 3 {
+		t.Fatalf("expected 3 selected candidates, got %d", len(got))
+	}
+	if got[0].chunk.Metadata["provider"] != "prudential" {
+		t.Fatalf("expected top-ranked provider first, got %s", got[0].chunk.Metadata["provider"])
+	}
+	if got[1].chunk.Metadata["provider"] != "bluecross" {
+		t.Fatalf("expected second provider to preserve coverage within limit, got %s", got[1].chunk.Metadata["provider"])
+	}
+}
