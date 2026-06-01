@@ -13,30 +13,13 @@ import (
 )
 
 func TestChatProxyDefaultsToGoRuntime(t *testing.T) {
-	goUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/query" {
-			t.Fatalf("unexpected path: %s", r.URL.Path)
-		}
-		if got := r.URL.Query().Get("provider"); got != "bluecross" {
-			t.Fatalf("expected provider=bluecross, got %q", got)
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"answer": "go default answer",
-			"sources": []map[string]any{
-				{
-					"source_name":  "g.md",
-					"clauses":      "1.C",
-					"section_path": "Benefits > Consult",
-				},
-			},
-		})
-	}))
-	defer goUpstream.Close()
+	t.Setenv("HK_INSURANCE_RAG_DATA_PATH", "../../assets/rag_normalized/hk_insurance")
+	t.Setenv("HK_INSURANCE_RAG_MAX_SOURCES", "6")
 
 	cfg := &config.Config{
 		PythonRAGBaseURL:        "http://127.0.0.1:9",
 		PythonRAGTimeoutSeconds: 5,
-		GoRAGBaseURL:            goUpstream.URL,
+		GoRAGBaseURL:            "http://127.0.0.1:9",
 		GoRAGTimeoutSeconds:     5,
 		ChatRAGRuntime:          "",
 	}
@@ -57,8 +40,8 @@ func TestChatProxyDefaultsToGoRuntime(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if strings.TrimSpace(stringValueFromAny(resp["answer"])) != "go default answer" {
-		t.Fatalf("unexpected answer: %#v", resp["answer"])
+	if strings.TrimSpace(stringValueFromAny(resp["answer"])) == "" {
+		t.Fatalf("expected non-empty answer, got %#v", resp["answer"])
 	}
 }
 
@@ -114,24 +97,13 @@ func TestChatProxyUsesPythonWhenConfigured(t *testing.T) {
 }
 
 func TestChatProxyFallsBackToGoWhenPythonUnavailable(t *testing.T) {
-	goUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"answer": "go fallback answer",
-			"sources": []map[string]any{
-				{
-					"source_name":  "g.md",
-					"clauses":      "1.B",
-					"section_path": "Benefits > Room and Board",
-				},
-			},
-		})
-	}))
-	defer goUpstream.Close()
+	t.Setenv("HK_INSURANCE_RAG_DATA_PATH", "../../assets/rag_normalized/hk_insurance")
+	t.Setenv("HK_INSURANCE_RAG_MAX_SOURCES", "6")
 
 	cfg := &config.Config{
 		PythonRAGBaseURL:        "http://127.0.0.1:9",
 		PythonRAGTimeoutSeconds: 1,
-		GoRAGBaseURL:            goUpstream.URL,
+		GoRAGBaseURL:            "http://127.0.0.1:9",
 		GoRAGTimeoutSeconds:     5,
 		ChatRAGRuntime:          "python",
 	}
@@ -150,8 +122,8 @@ func TestChatProxyFallsBackToGoWhenPythonUnavailable(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if strings.TrimSpace(stringValueFromAny(resp["answer"])) != "go fallback answer" {
-		t.Fatalf("unexpected fallback answer: %#v", resp["answer"])
+	if strings.TrimSpace(stringValueFromAny(resp["answer"])) == "" {
+		t.Fatalf("expected non-empty fallback answer, got %#v", resp["answer"])
 	}
 }
 
@@ -203,12 +175,12 @@ func TestChatProxyUsesGoRuntimeWhenConfigured(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if strings.TrimSpace(stringValueFromAny(resp["answer"])) != "go answer" {
-		t.Fatalf("unexpected answer: %#v", resp["answer"])
+	if strings.TrimSpace(stringValueFromAny(resp["answer"])) == "" {
+		t.Fatalf("expected non-empty answer: %#v", resp["answer"])
 	}
 	sources, _ := resp["sources"].([]any)
-	if len(sources) != 2 {
-		t.Fatalf("expected 2 sources got %d", len(sources))
+	if len(sources) == 0 {
+		t.Fatalf("expected non-empty sources")
 	}
 }
 
@@ -280,6 +252,7 @@ func TestChatProxyInvalidProviderMapsToBadRequest(t *testing.T) {
 }
 
 func TestGoRAGClientFormatsSources(t *testing.T) {
+	t.Setenv("GO_RAG_INPROCESS_ENABLED", "false")
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"answer": "answer",

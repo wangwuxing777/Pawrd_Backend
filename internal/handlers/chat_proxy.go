@@ -7,12 +7,14 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/wangwuxing777/Pawrd_Backend/internal/config"
+	"github.com/wangwuxing777/Pawrd_Backend/internal/services/raggo"
 )
 
 type chatSessionState struct {
@@ -64,6 +66,7 @@ type pythonRAGClient struct {
 type goRAGClient struct {
 	baseURL string
 	client  *http.Client
+	cfg     raggo.Config
 }
 
 func newPythonRAGClient(cfg *config.Config) *pythonRAGClient {
@@ -89,6 +92,7 @@ func newGoRAGClient(cfg *config.Config) *goRAGClient {
 		client: &http.Client{
 			Timeout: timeout,
 		},
+		cfg: raggo.LoadConfig(),
 	}
 }
 
@@ -320,6 +324,56 @@ func (c *pythonRAGClient) queryInsurance(question, provider string) (string, []s
 }
 
 func (c *goRAGClient) queryInsurance(question, provider string) (string, []string, error) {
+	// Prefer in-process Go RAG runtime to avoid deploy-time loopback dependency.
+	if inProcessEnabled() {
+		if answer, sources, err := c.queryInsuranceInProcess(question, provider); err == nil {
+			return answer, sources, nil
+		}
+	}
+
+	// Fallback to HTTP endpoint if in-process call fails unexpectedly.
+	return c.queryInsuranceViaHTTP(question, provider)
+}
+
+func inProcessEnabled() bool {
+	raw := strings.TrimSpace(strings.ToLower(os.Getenv("GO_RAG_INPROCESS_ENABLED")))
+	return raw == "" || raw == "1" || raw == "true" || raw == "yes" || raw == "on"
+}
+
+func (c *goRAGClient) queryInsuranceInProcess(question, provider string) (string, []string, error) {
+	validProvider, err := raggo.ValidateProvider(provider)
+	if err != nil {
+		return "", nil, errInvalidProvider
+	}
+	maxSources, err := raggo.ValidateMaxSources("3", c.cfg.DefaultMaxSources, c.cfg.MaxAllowedSources)
+	if err != nil {
+		maxSources = 3
+	}
+
+	result := raggo.AnswerQuery(c.cfg, question, validProvider, "", maxSources)
+	if strings.TrimSpace(result.Answer) == "" {
+		return "", nil, errors.New("go rag returned empty answer")
+	}
+	sources := make([]string, 0, len(result.Sources))
+	for _, item := range result.Sources {
+		source := strings.TrimSpace(item.SourceName)
+		if clause := strings.TrimSpace(item.Clauses); clause != "" {
+			source = strings.TrimSpace(source + " " + clause)
+		}
+		if section := strings.TrimSpace(item.SectionPath); section != "" {
+			source = strings.TrimSpace(source + " - " + section)
+		}
+		if source == "" {
+			source = strings.TrimSpace(item.Snippet)
+		}
+		if source != "" {
+			sources = append(sources, source)
+		}
+	}
+	return strings.TrimSpace(result.Answer), sources, nil
+}
+
+func (c *goRAGClient) queryInsuranceViaHTTP(question, provider string) (string, []string, error) {
 	params := url.Values{}
 	params.Set("q", question)
 	params.Set("max_sources", "3")
