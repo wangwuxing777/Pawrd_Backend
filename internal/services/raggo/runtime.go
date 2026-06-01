@@ -562,6 +562,18 @@ func metadataBonus(ch Chunk, tokens []string, intent queryIntent) float64 {
 		if containsAny(sectionPath, "definitions", "definition", "定義", "釋義") {
 			score += 1.5
 		}
+		if containsAny(sectionPath, "what your policy does not cover", "does not cover", "不保", "不承保") {
+			score -= 1.0
+		}
+		if containsAny(sectionPath, "advanced critical illness", "critical illness cash benefit") {
+			score -= 0.8
+		}
+		if containsAny(ch.Text, "must pass before", "comes into effect", "shall be available only after", "only after the expiry") {
+			score += 1.0
+		}
+		if containsAny(ch.Text, "if benefits under part", "if benefits under", "part 1.6", "part 1.4") {
+			score -= 0.8
+		}
 		if unitTypes == "benefit" {
 			score -= 0.4
 		}

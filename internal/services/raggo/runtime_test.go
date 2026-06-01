@@ -191,6 +191,35 @@ func TestLoadChunks_FromNormalizedCorpus(t *testing.T) {
 	}
 }
 
+func TestLoadChunks_IncludesStructuredSummaryChunks(t *testing.T) {
+	cfg := LoadConfig()
+	chunks, err := LoadChunks(cfg)
+	if err != nil {
+		t.Fatalf("load chunks: %v", err)
+	}
+
+	var foundWaitingSummary bool
+	var foundCoverageSummary bool
+	for _, ch := range chunks {
+		switch ch.Metadata["source_name"] {
+		case "structured_waiting_period_summary":
+			foundWaitingSummary = true
+		case "structured_sub_coverage_summary":
+			foundCoverageSummary = true
+		}
+		if foundWaitingSummary && foundCoverageSummary {
+			break
+		}
+	}
+
+	if !foundWaitingSummary {
+		t.Fatalf("expected aggregated waiting period summary chunk")
+	}
+	if !foundCoverageSummary {
+		t.Fatalf("expected aggregated coverage summary chunk")
+	}
+}
+
 func TestLoadConfig_FallsBackToNormalizedCorpusWhenEnvPathMissing(t *testing.T) {
 	original := os.Getenv("HK_INSURANCE_RAG_DATA_PATH")
 	t.Cleanup(func() {
