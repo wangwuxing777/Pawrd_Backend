@@ -18,9 +18,27 @@ func TestChatProxyDefaultsToGoRuntime(t *testing.T) {
 	t.Setenv("GO_RAG_INPROCESS_ENABLED", "true")
 
 	llmUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode llm request: %v", err)
+		}
+		messages, _ := payload["messages"].([]any)
+		if len(messages) < 2 {
+			t.Fatalf("expected router or summarizer messages, got %#v", payload)
+		}
+		msgMap, _ := messages[1].(map[string]any)
+		content, _ := msgMap["content"].(string)
+		if strings.Contains(content, "User question:") {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{{
+					"message": map[string]any{"content": `{"route":"rag_query","direct_response_type":"","reason":"insurance query","confidence":0.92}`},
+				}},
+			})
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"choices": []map[string]any{{
-				"message": map[string]any{"content": "go in-process answer"},
+				"message": map[string]any{"content": `{"type":"answer","answer":"go in-process answer","needs_clarification":false}`},
 			}},
 		})
 	}))
@@ -116,9 +134,27 @@ func TestChatProxyFallsBackToGoWhenPythonUnavailable(t *testing.T) {
 	t.Setenv("GO_RAG_INPROCESS_ENABLED", "true")
 
 	llmUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode llm request: %v", err)
+		}
+		messages, _ := payload["messages"].([]any)
+		if len(messages) < 2 {
+			t.Fatalf("expected router or summarizer messages, got %#v", payload)
+		}
+		msgMap, _ := messages[1].(map[string]any)
+		content, _ := msgMap["content"].(string)
+		if strings.Contains(content, "User question:") {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{{
+					"message": map[string]any{"content": `{"route":"rag_query","direct_response_type":"","reason":"insurance query","confidence":0.91}`},
+				}},
+			})
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"choices": []map[string]any{{
-				"message": map[string]any{"content": "fallback go answer"},
+				"message": map[string]any{"content": `{"type":"answer","answer":"fallback go answer","needs_clarification":false}`},
 			}},
 		})
 	}))
@@ -155,7 +191,49 @@ func TestChatProxyFallsBackToGoWhenPythonUnavailable(t *testing.T) {
 	}
 }
 
+func TestChatProxyReturnsInProcessFailureInsteadOfHTTPFallback(t *testing.T) {
+	t.Setenv("HK_INSURANCE_RAG_DATA_PATH", "../../assets/rag_normalized/hk_insurance")
+	t.Setenv("HK_INSURANCE_RAG_MAX_SOURCES", "6")
+	t.Setenv("GO_RAG_INPROCESS_ENABLED", "true")
+
+	llmUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "upstream summary timeout", http.StatusGatewayTimeout)
+	}))
+	defer llmUpstream.Close()
+
+	cfg := &config.Config{
+		PythonRAGBaseURL:        "http://127.0.0.1:9",
+		PythonRAGTimeoutSeconds: 1,
+		GoRAGBaseURL:            "http://127.0.0.1:9",
+		GoRAGTimeoutSeconds:     5,
+		ChatRAGRuntime:          "go",
+		RAGLLMBaseURL:           llmUpstream.URL,
+		RAGLLMModel:             "test-model",
+		RAGLLMAPIKey:            "test-key",
+		RAGLLMTimeoutSeconds:    5,
+	}
+	store := NewChatSessionStore()
+	handler := NewChatProxyHandler(cfg, store)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(`{"query":"What is Prudential room and board coverage?","model":"insurance","provider":"prudential"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	handler(rr, req)
+
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("expected status=502 got=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "127.0.0.1:9/query") {
+		t.Fatalf("expected no HTTP fallback loopback error, got body=%s", rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "go rag in-process failed") {
+		t.Fatalf("expected in-process failure detail, got body=%s", rr.Body.String())
+	}
+}
+
 func TestChatProxyUsesGoRuntimeWhenConfigured(t *testing.T) {
+	t.Setenv("GO_RAG_INPROCESS_ENABLED", "false")
+
 	goUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/query" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)

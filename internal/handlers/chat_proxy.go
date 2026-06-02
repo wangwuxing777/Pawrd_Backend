@@ -337,12 +337,14 @@ func (c *pythonRAGClient) queryInsurance(question, provider string) (string, []s
 func (c *goRAGClient) queryInsurance(question, provider string) (string, []string, error) {
 	// Prefer in-process Go RAG runtime to avoid deploy-time loopback dependency.
 	if inProcessEnabled() {
-		if answer, sources, err := c.queryInsuranceInProcess(question, provider); err == nil {
-			return answer, sources, nil
+		answer, sources, err := c.queryInsuranceInProcess(question, provider)
+		if err != nil {
+			return "", nil, err
 		}
+		return answer, sources, nil
 	}
 
-	// Fallback to HTTP endpoint if in-process call fails unexpectedly.
+	// Compatibility mode for environments that explicitly disable in-process RAG.
 	return c.queryInsuranceViaHTTP(question, provider)
 }
 
@@ -363,7 +365,14 @@ func (c *goRAGClient) queryInsuranceInProcess(question, provider string) (string
 
 	result := raggo.AnswerQuery(c.cfg, question, validProvider, "", maxSources)
 	if strings.TrimSpace(result.Answer) == "" {
-		return "", nil, errors.New("go rag returned empty answer")
+		detail := strings.TrimSpace(result.AnswerMode)
+		if structuredReason, ok := result.Structured["failure_reason"].(string); ok && strings.TrimSpace(structuredReason) != "" {
+			detail = strings.TrimSpace(detail + ": " + structuredReason)
+		}
+		if detail == "" {
+			detail = "empty answer"
+		}
+		return "", nil, fmt.Errorf("go rag in-process failed: %s", detail)
 	}
 	sources := make([]string, 0, len(result.Sources))
 	for _, item := range result.Sources {
