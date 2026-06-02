@@ -2,6 +2,7 @@ package raggo
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -51,10 +52,15 @@ func TestAnswerQueryReturnsNoLLMSummaryWhenLLMDisabled(t *testing.T) {
 	if len(result.Sources) == 0 {
 		t.Fatalf("expected retrieved sources")
 	}
+	if result.Structured == nil || result.Structured["type"] != "rag_llm_summary_unavailable" {
+		t.Fatalf("expected structured no-llm metadata, got %#v", result.Structured)
+	}
 }
 
 func TestAnswerQueryUsesLLMSummaryWhenConfigured(t *testing.T) {
+	requestCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
 		var payload map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatalf("decode summarizer request: %v", err)
@@ -68,9 +74,13 @@ func TestAnswerQueryUsesLLMSummaryWhenConfigured(t *testing.T) {
 		if !strings.Contains(content, "Evidence snippets") {
 			t.Fatalf("expected evidence prompt, got %q", content)
 		}
+		responseFormat, _ := payload["response_format"].(map[string]any)
+		if responseFormat["type"] != "json_object" {
+			t.Fatalf("expected json_object response format, got %#v", payload["response_format"])
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"choices": []map[string]any{{
-				"message": map[string]any{"content": "LLM grounded summary"},
+				"message": map[string]any{"content": `{"type":"answer","answer":"LLM grounded summary","needs_clarification":false}`},
 			}},
 		})
 	}))
@@ -91,6 +101,139 @@ func TestAnswerQueryUsesLLMSummaryWhenConfigured(t *testing.T) {
 	}
 	if len(result.Sources) == 0 {
 		t.Fatalf("expected retrieved sources")
+	}
+	if result.Structured == nil || result.Structured["attempt"] == nil {
+		t.Fatalf("expected structured summary attempt metadata, got %#v", result.Structured)
+	}
+	if requestCount != 1 {
+		t.Fatalf("expected one summarizer request, got %d", requestCount)
+	}
+}
+
+func TestAnswerQueryUsesLLMClarificationWhenConfigured(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]any{"content": `{"type":"clarification_needed","needs_clarification":true,"clarification_message":"Please specify which Blue Cross and Prudential plans you want compared.","clarification_options":[{"provider":"bluecross","products":["Love Pet - Type A","Love Pet - Type B"]},{"provider":"prudential","products":["PRUChoice Furkid Care - A","PRUChoice Furkid Care - B"]}]}`},
+			}},
+		})
+	}))
+	defer server.Close()
+
+	cfg := LoadConfig()
+	cfg.LLMBaseURL = server.URL
+	cfg.LLMModel = "test-model"
+	cfg.LLMAPIKey = "test-key"
+	cfg.LLMTimeoutSeconds = 5
+
+	result := AnswerQuery(cfg, "Compare Blue Cross and Prudential veterinary consultation limits.", "", "", 3)
+	if result.AnswerMode != "clarification_needed" {
+		t.Fatalf("expected clarification_needed mode, got %s answer=%q", result.AnswerMode, result.Answer)
+	}
+	if !strings.Contains(result.Answer, "Please specify") {
+		t.Fatalf("unexpected clarification answer: %q", result.Answer)
+	}
+	if result.Structured == nil || result.Structured["type"] != "clarification_needed" {
+		t.Fatalf("expected clarification structured payload, got %#v", result.Structured)
+	}
+}
+
+func TestAnswerQueryFallsBackWhenJSONModeUnsupported(t *testing.T) {
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode summarizer request: %v", err)
+		}
+		if requestCount == 1 {
+			http.Error(w, `{"code":20024,"message":"Json mode is not supported for this model.","data":null}`, http.StatusBadRequest)
+			return
+		}
+		if _, ok := payload["response_format"]; ok {
+			t.Fatalf("did not expect response_format on fallback request")
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]any{"content": "```json\n{\"type\":\"answer\",\"answer\":\"Fallback JSON answer\",\"needs_clarification\":false}\n```"},
+			}},
+		})
+	}))
+	defer server.Close()
+
+	cfg := LoadConfig()
+	cfg.LLMBaseURL = server.URL
+	cfg.LLMModel = "test-model"
+	cfg.LLMAPIKey = "test-key"
+	cfg.LLMTimeoutSeconds = 5
+
+	result := AnswerQuery(cfg, "What is the meaning of waiting period?", "", "", 3)
+	if result.AnswerMode != "go_rag_llm_summary" {
+		t.Fatalf("expected llm summary mode, got %s answer=%q", result.AnswerMode, result.Answer)
+	}
+	if result.Answer != "Fallback JSON answer" {
+		t.Fatalf("unexpected fallback answer: %q", result.Answer)
+	}
+	if requestCount != 2 {
+		t.Fatalf("expected two summarizer requests, got %d", requestCount)
+	}
+}
+
+func TestAnswerQueryExposesSummaryFailureReason(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "upstream summary timeout", http.StatusGatewayTimeout)
+	}))
+	defer server.Close()
+
+	cfg := LoadConfig()
+	cfg.LLMBaseURL = server.URL
+	cfg.LLMModel = "test-model"
+	cfg.LLMAPIKey = "test-key"
+	cfg.LLMTimeoutSeconds = 5
+
+	result := AnswerQuery(cfg, "What is the meaning of waiting period?", "", "", 3)
+	if result.AnswerMode != "go_no_llm_summary" {
+		t.Fatalf("expected no-llm-summary mode, got %s", result.AnswerMode)
+	}
+	if result.Structured == nil {
+		t.Fatalf("expected structured failure metadata")
+	}
+	reason, _ := result.Structured["failure_reason"].(string)
+	if !strings.Contains(reason, "status 504") {
+		t.Fatalf("expected failure reason to mention status 504, got %q", reason)
+	}
+}
+
+func TestShouldRetrySummaryError(t *testing.T) {
+	if shouldRetrySummaryError(nil) != true {
+		t.Fatalf("nil error should be retryable")
+	}
+	if shouldRetrySummaryError(errors.New("empty_summary_content")) != true {
+		t.Fatalf("empty content should be retryable")
+	}
+	if shouldRetrySummaryError(errors.New("status 504 body=timeout")) != false {
+		t.Fatalf("504 should not be retryable")
+	}
+	if shouldRetrySummaryError(errors.New("context deadline exceeded")) != false {
+		t.Fatalf("timeout should not be retryable")
+	}
+}
+
+func TestDefaultDisclaimerFollowsRequestedLanguage(t *testing.T) {
+	if got := defaultDisclaimer("zh", "Compare plans"); !strings.Contains(got, "仅供参考") {
+		t.Fatalf("expected zh disclaimer, got %q", got)
+	}
+	if got := defaultDisclaimer("en", "Compare plans"); !strings.Contains(got, "For reference only") {
+		t.Fatalf("expected en disclaimer, got %q", got)
+	}
+}
+
+func TestDefaultDisclaimerFallsBackToQuestionLanguage(t *testing.T) {
+	if got := defaultDisclaimer("", "Blue Cross 包唔包獸醫診症？"); !strings.Contains(got, "仅供参考") {
+		t.Fatalf("expected zh disclaimer from han question, got %q", got)
+	}
+	if got := defaultDisclaimer("", "What is the meaning of waiting period?"); !strings.Contains(got, "For reference only") {
+		t.Fatalf("expected en disclaimer from english question, got %q", got)
 	}
 }
 
@@ -186,6 +329,24 @@ func TestLoadChunks_DoesNotIncludeAggregatedSummaryChunks(t *testing.T) {
 	}
 }
 
+func TestLoadChunks_UsesStableInProcessCache(t *testing.T) {
+	cfg := LoadConfig()
+	first, err := LoadChunks(cfg)
+	if err != nil {
+		t.Fatalf("first load chunks: %v", err)
+	}
+	second, err := LoadChunks(cfg)
+	if err != nil {
+		t.Fatalf("second load chunks: %v", err)
+	}
+	if len(first) == 0 || len(second) == 0 {
+		t.Fatalf("expected cached chunk results")
+	}
+	if len(first) != len(second) {
+		t.Fatalf("expected cached chunk count to match, got %d vs %d", len(first), len(second))
+	}
+}
+
 func TestLoadConfig_FallsBackToNormalizedCorpusWhenEnvPathMissing(t *testing.T) {
 	original := os.Getenv("HK_INSURANCE_RAG_DATA_PATH")
 	t.Cleanup(func() {
@@ -211,5 +372,265 @@ func TestRankCandidatesUsesPlainLexicalRetrieval(t *testing.T) {
 	}
 	if got[0].chunk.Metadata["provider"] != "bluecross" {
 		t.Fatalf("expected lexical top hit to be bluecross, got %s", got[0].chunk.Metadata["provider"])
+	}
+}
+
+func TestRankCandidatesPrefersBenefitOverExclusionForChineseConsultQuery(t *testing.T) {
+	chunks := []Chunk{
+		{
+			Text: "本保單不承保一般不保事項，但未說明是否包含獸醫診症保障。",
+			Metadata: map[string]string{
+				"provider":     "bluecross",
+				"language":     "zh",
+				"source_name":  "exclusion.md",
+				"section_path": "一般不保事項",
+				"unit_types":   "exclusion",
+				"topic_tags":   "exclusion",
+			},
+		},
+		{
+			Text: "於受保期內因疾病或受傷而接受獸醫診症時的所有獸醫費用均受保障。",
+			Metadata: map[string]string{
+				"provider":     "bluecross",
+				"language":     "zh",
+				"source_name":  "consult.md",
+				"section_path": "第一部分 > C) 獸醫診症",
+				"unit_types":   "benefit",
+				"topic_tags":   "benefit,consult",
+			},
+		},
+	}
+
+	got := rankCandidates(chunks, "Blue Cross 包唔包獸醫診症？", "bluecross", "zh", 3)
+	if len(got) < 2 {
+		t.Fatalf("expected ranked candidates")
+	}
+	if got[0].chunk.Metadata["source_name"] != "consult.md" {
+		t.Fatalf("expected consult benefit first, got %s", got[0].chunk.Metadata["source_name"])
+	}
+}
+
+func TestRankCandidatesPenalizesGeneralExclusionNoiseForCoverageQuestion(t *testing.T) {
+	chunks := []Chunk{
+		{
+			Text: "This policy excludes some situations but does not describe vet consultation coverage.",
+			Metadata: map[string]string{
+				"provider":     "bluecross",
+				"language":     "en",
+				"source_name":  "general-exclusions.md",
+				"section_path": "General Exclusions",
+				"unit_types":   "exclusion",
+				"topic_tags":   "exclusion",
+			},
+		},
+		{
+			Text: "All Vet Expenses made for the consultation carried out by a Vet during the Period of Insurance for Illness or Injury are covered.",
+			Metadata: map[string]string{
+				"provider":     "bluecross",
+				"language":     "en",
+				"source_name":  "consult-benefit.md",
+				"section_path": "Benefits > C) Vet Consultation",
+				"unit_types":   "benefit",
+				"topic_tags":   "benefit,consult",
+			},
+		},
+	}
+
+	got := rankCandidates(chunks, "Does Blue Cross cover vet consultation?", "bluecross", "en", 3)
+	if len(got) < 2 {
+		t.Fatalf("expected ranked candidates")
+	}
+	if got[0].chunk.Metadata["source_name"] != "consult-benefit.md" {
+		t.Fatalf("expected consult benefit first, got %s", got[0].chunk.Metadata["source_name"])
+	}
+}
+
+func TestDedupeCandidatesRemovesDuplicateEvidenceWindows(t *testing.T) {
+	candidates := []rankedChunk{
+		{
+			chunk: Chunk{
+				Text: "Blue Cross consultation limit HK$8,000 per year.",
+				Metadata: map[string]string{
+					"provider":     "bluecross",
+					"source_name":  "structured_sub_coverage_limit",
+					"section_path": "Structured Product Data > Coverage Limits > Veterinary Consultation",
+				},
+			},
+			score: 10,
+		},
+		{
+			chunk: Chunk{
+				Text: "Blue Cross consultation limit HK$8,000 per year.",
+				Metadata: map[string]string{
+					"provider":     "bluecross",
+					"source_name":  "structured_sub_coverage_limit",
+					"section_path": "Structured Product Data > Coverage Limits > Veterinary Consultation",
+				},
+			},
+			score: 9,
+		},
+	}
+
+	got := dedupeCandidates(candidates)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 deduped candidate, got %d", len(got))
+	}
+}
+
+func TestCollapseStructuredCandidatesKeepsOnlyStrongestStructuredSectionDuplicate(t *testing.T) {
+	candidates := []rankedChunk{
+		{
+			chunk: Chunk{
+				Text: "Blue Cross consultation limit HK$12,000 per year.",
+				Metadata: map[string]string{
+					"provider":     "bluecross",
+					"language":     "en",
+					"source_name":  "structured_sub_coverage_limit",
+					"section_path": "Structured Product Data > Coverage Limits > Veterinary Consultation",
+				},
+			},
+			score: 12,
+		},
+		{
+			chunk: Chunk{
+				Text: "Blue Cross consultation limit HK$8,000 per year.",
+				Metadata: map[string]string{
+					"provider":     "bluecross",
+					"language":     "en",
+					"source_name":  "structured_sub_coverage_limit",
+					"section_path": "Structured Product Data > Coverage Limits > Veterinary Consultation",
+				},
+			},
+			score: 11,
+		},
+		{
+			chunk: Chunk{
+				Text: "Blue Cross room and board limit HK$5,000 per year.",
+				Metadata: map[string]string{
+					"provider":     "bluecross",
+					"language":     "en",
+					"source_name":  "structured_sub_coverage_limit",
+					"section_path": "Structured Product Data > Coverage Limits > Room and Board",
+				},
+			},
+			score: 10,
+		},
+	}
+
+	got := collapseStructuredCandidates(candidates)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 structured candidates after collapse, got %d", len(got))
+	}
+	if got[0].chunk.Text != "Blue Cross consultation limit HK$12,000 per year." {
+		t.Fatalf("expected strongest consultation row kept first, got %q", got[0].chunk.Text)
+	}
+}
+
+func TestDiversifyCandidatesPrefersProviderCoverageWithoutFilter(t *testing.T) {
+	candidates := []rankedChunk{
+		{chunk: Chunk{Text: "p1", Metadata: map[string]string{"provider": "prudential", "source_name": "a", "section_path": "A"}}, score: 10},
+		{chunk: Chunk{Text: "p2", Metadata: map[string]string{"provider": "prudential", "source_name": "b", "section_path": "B"}}, score: 9},
+		{chunk: Chunk{Text: "b1", Metadata: map[string]string{"provider": "bluecross", "source_name": "c", "section_path": "C"}}, score: 8},
+	}
+
+	got := diversifyCandidates(candidates, "")
+	if len(got) != 3 {
+		t.Fatalf("expected 3 candidates, got %d", len(got))
+	}
+	if got[0].chunk.Metadata["provider"] != "prudential" {
+		t.Fatalf("expected first provider prudential, got %s", got[0].chunk.Metadata["provider"])
+	}
+	if got[1].chunk.Metadata["provider"] != "bluecross" {
+		t.Fatalf("expected second provider bluecross, got %s", got[1].chunk.Metadata["provider"])
+	}
+}
+
+func TestRankCandidatesPrefersDefinitionOverStructuredWaitingPeriodRows(t *testing.T) {
+	chunks := []Chunk{
+		{
+			Text: "Waiting period means the period from the policy start date before benefits become available.",
+			Metadata: map[string]string{
+				"provider":     "one_degree",
+				"language":     "en",
+				"source_name":  "policy.md",
+				"section_path": "Definitions > Definition: Waiting Period",
+				"unit_types":   "definition",
+				"topic_tags":   "definition,waiting_period",
+			},
+		},
+		{
+			Text: "Plan A: waiting period 30 days for illness, 7 days for injury.",
+			Metadata: map[string]string{
+				"provider":     "prudential",
+				"language":     "en",
+				"source_name":  "structured_product_waiting_period",
+				"section_path": "Structured Product Data > Waiting Period",
+				"unit_types":   "waiting_period",
+				"topic_tags":   "structured_product,waiting_period",
+			},
+		},
+	}
+
+	got := rankCandidates(chunks, "What is the meaning of waiting period?", "", "en", 3)
+	if len(got) < 2 {
+		t.Fatalf("expected ranked candidates")
+	}
+	if got[0].chunk.Metadata["unit_types"] != "definition" {
+		t.Fatalf("expected definition chunk first, got %s", got[0].chunk.Metadata["unit_types"])
+	}
+}
+
+func TestBudgetSourcesForSummaryCompactsSnippetsToSharedBudget(t *testing.T) {
+	sources := []Source{
+		{Snippet: strings.Repeat("a", 800)},
+		{Snippet: strings.Repeat("b", 800)},
+		{Snippet: strings.Repeat("c", 800)},
+	}
+
+	got := budgetSourcesForSummary(sources, 900)
+	if len(got) != 3 {
+		t.Fatalf("expected 3 sources, got %d", len(got))
+	}
+	for i, src := range got {
+		if len(src.Snippet) > 520 {
+			t.Fatalf("source %d snippet should be compacted, len=%d", i, len(src.Snippet))
+		}
+	}
+}
+
+func TestBudgetSourcesForSummaryCompressesStructuredRowsMoreAggressively(t *testing.T) {
+	sources := []Source{
+		{SourceName: "policy.md", Snippet: strings.Repeat("a", 800)},
+		{SourceName: "structured_sub_coverage_limit", Snippet: strings.Repeat("b", 800)},
+	}
+
+	got := budgetSourcesForSummary(sources, 500)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 sources, got %d", len(got))
+	}
+	if len(got[1].Snippet) >= len(got[0].Snippet) {
+		t.Fatalf("expected structured snippet to be compressed more aggressively, got %d vs %d", len(got[1].Snippet), len(got[0].Snippet))
+	}
+}
+
+func TestBuildSummarizerResultMapsClarificationEnvelope(t *testing.T) {
+	envelope := llmAnswerEnvelope{
+		Type:                 "clarification_needed",
+		NeedsClarification:   true,
+		ClarificationMessage: "Please specify the plan.",
+		ClarificationOptions: []providerOption{
+			{Provider: "bluecross", Products: []string{"Love Pet - Type A", "Love Pet - Type B"}},
+		},
+	}
+
+	answer, mode, structured := buildSummarizerResult(envelope, Config{LLMModel: "test-model"}, 3, summarizeAttempt{name: "primary", sourceMode: "budget_900"})
+	if mode != "clarification_needed" {
+		t.Fatalf("expected clarification_needed mode, got %s", mode)
+	}
+	if answer != "Please specify the plan." {
+		t.Fatalf("unexpected clarification answer: %q", answer)
+	}
+	if structured["type"] != "clarification_needed" {
+		t.Fatalf("expected clarification structured payload, got %#v", structured)
 	}
 }

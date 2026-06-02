@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -30,11 +31,27 @@ type structuredWaitingPeriod struct {
 }
 
 var (
-	headingRe = regexp.MustCompile(`^(#{1,6})\s+(.*\S)\s*$`)
-	anchorRe  = regexp.MustCompile(`^>\s*([A-Za-z][A-Za-z ]*):\s*(.*?)\s*$`)
+	headingRe  = regexp.MustCompile(`^(#{1,6})\s+(.*\S)\s*$`)
+	anchorRe   = regexp.MustCompile(`^>\s*([A-Za-z][A-Za-z ]*):\s*(.*?)\s*$`)
+	chunkCache = struct {
+		mu    sync.RWMutex
+		items map[string][]Chunk
+	}{
+		items: map[string][]Chunk{},
+	}
 )
 
 func LoadChunks(cfg Config) ([]Chunk, error) {
+	cacheKey := cfg.DataPath
+	chunkCache.mu.RLock()
+	if cached, ok := chunkCache.items[cacheKey]; ok {
+		out := make([]Chunk, len(cached))
+		copy(out, cached)
+		chunkCache.mu.RUnlock()
+		return out, nil
+	}
+	chunkCache.mu.RUnlock()
+
 	paths, err := markdownFiles(cfg.DataPath)
 	if err != nil {
 		return nil, err
@@ -52,6 +69,13 @@ func LoadChunks(cfg Config) ([]Chunk, error) {
 		return nil, err
 	}
 	chunks = append(chunks, structuredChunks...)
+
+	cached := make([]Chunk, len(chunks))
+	copy(cached, chunks)
+	chunkCache.mu.Lock()
+	chunkCache.items[cacheKey] = cached
+	chunkCache.mu.Unlock()
+
 	return chunks, nil
 }
 
@@ -476,7 +500,7 @@ func inferTopicTags(text, unitType, sectionPath string) string {
 	if isWaitingPeriodSection(sectionLower) || ((strings.Contains(l, "waiting period") || strings.Contains(l, "等候期")) && unitType == "waiting_period") {
 		tags = append(tags, "waiting_period")
 	}
-	if strings.Contains(l, "consult") || strings.Contains(l, "診症") {
+	if strings.Contains(sectionLower, "consult") || strings.Contains(sectionLower, "診症") || strings.Contains(l, "獸醫診症") {
 		tags = append(tags, "consult")
 	}
 	if strings.Contains(l, "plan a") || strings.Contains(l, "plan b") || strings.Contains(l, "hk$") {
