@@ -36,24 +36,107 @@ func TestValidateMaxSources(t *testing.T) {
 	}
 }
 
-func TestAnswerQueryReturnsNoLLMSummaryWhenLLMDisabled(t *testing.T) {
+func TestAnswerQueryReturnsFallbackAnswerWhenLLMDisabled(t *testing.T) {
 	cfg := LoadConfig()
 	cfg.LLMBaseURL = ""
 	cfg.LLMModel = ""
 	cfg.LLMAPIKey = ""
 
 	result := AnswerQuery(cfg, "What is the meaning of waiting period?", "", "", 3)
-	if result.AnswerMode != "go_no_llm_summary" {
-		t.Fatalf("expected no-llm-summary mode, got %s answer=%q", result.AnswerMode, result.Answer)
+	if result.AnswerMode != "go_rag_fallback_summary" {
+		t.Fatalf("expected fallback summary mode, got %s answer=%q", result.AnswerMode, result.Answer)
 	}
-	if strings.TrimSpace(result.Answer) != "" {
-		t.Fatalf("expected empty answer when llm disabled, got %q", result.Answer)
+	if strings.TrimSpace(result.Answer) == "" {
+		t.Fatalf("expected non-empty fallback answer when llm disabled")
 	}
 	if len(result.Sources) == 0 {
 		t.Fatalf("expected retrieved sources")
 	}
 	if result.Structured == nil || result.Structured["type"] != "rag_llm_summary_unavailable" {
 		t.Fatalf("expected structured no-llm metadata, got %#v", result.Structured)
+	}
+	if result.Structured["fallback_mode"] != "retrieval_excerpt" {
+		t.Fatalf("expected retrieval fallback metadata, got %#v", result.Structured)
+	}
+}
+
+func TestAnswerQueryUsesRouterGreetingDirectResponse(t *testing.T) {
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if requestCount != 1 {
+			t.Fatalf("expected only router request, got %d", requestCount)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]any{"content": `{"route":"direct_response","direct_response_type":"greeting","reason":"simple greeting","confidence":0.99}`},
+			}},
+		})
+	}))
+	defer server.Close()
+
+	cfg := LoadConfig()
+	cfg.LLMBaseURL = server.URL
+	cfg.LLMModel = "test-model"
+	cfg.LLMAPIKey = "test-key"
+	cfg.LLMTimeoutSeconds = 5
+
+	result := AnswerQuery(cfg, "Hi", "", "en", 3)
+	if result.AnswerMode != "direct_response" {
+		t.Fatalf("expected direct_response mode, got %s answer=%q", result.AnswerMode, result.Answer)
+	}
+	if result.Answer != "Hi, how can I assist you today?" {
+		t.Fatalf("unexpected direct response answer: %q", result.Answer)
+	}
+}
+
+func TestAnswerQueryUsesRouterCapabilityDirectResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]any{"content": `{"route":"direct_response","direct_response_type":"capability_intro","reason":"asked about assistant capabilities","confidence":0.95}`},
+			}},
+		})
+	}))
+	defer server.Close()
+
+	cfg := LoadConfig()
+	cfg.LLMBaseURL = server.URL
+	cfg.LLMModel = "test-model"
+	cfg.LLMAPIKey = "test-key"
+	cfg.LLMTimeoutSeconds = 5
+
+	result := AnswerQuery(cfg, "What can you do?", "", "en", 3)
+	if result.AnswerMode != "direct_response" {
+		t.Fatalf("expected direct_response mode, got %s answer=%q", result.AnswerMode, result.Answer)
+	}
+	if !strings.Contains(result.Answer, "insurance assistant") {
+		t.Fatalf("unexpected capability response: %q", result.Answer)
+	}
+}
+
+func TestAnswerQueryUsesRouterOutOfScopeResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]any{"content": `{"route":"out_of_scope","direct_response_type":"","reason":"not about pet insurance","confidence":0.97}`},
+			}},
+		})
+	}))
+	defer server.Close()
+
+	cfg := LoadConfig()
+	cfg.LLMBaseURL = server.URL
+	cfg.LLMModel = "test-model"
+	cfg.LLMAPIKey = "test-key"
+	cfg.LLMTimeoutSeconds = 5
+
+	result := AnswerQuery(cfg, "What is the meaning of least common multiple?", "", "en", 3)
+	if result.AnswerMode != "out_of_scope" {
+		t.Fatalf("expected out_of_scope mode, got %s answer=%q", result.AnswerMode, result.Answer)
+	}
+	if !strings.Contains(result.Answer, "outside the scope") {
+		t.Fatalf("unexpected out_of_scope response: %q", result.Answer)
 	}
 }
 
@@ -64,6 +147,14 @@ func TestAnswerQueryUsesLLMSummaryWhenConfigured(t *testing.T) {
 		var payload map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatalf("decode summarizer request: %v", err)
+		}
+		if requestCount == 1 {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{{
+					"message": map[string]any{"content": `{"route":"rag_query","direct_response_type":"","reason":"insurance query","confidence":0.92}`},
+				}},
+			})
+			return
 		}
 		messages, _ := payload["messages"].([]any)
 		if len(messages) < 2 {
@@ -105,13 +196,23 @@ func TestAnswerQueryUsesLLMSummaryWhenConfigured(t *testing.T) {
 	if result.Structured == nil || result.Structured["attempt"] == nil {
 		t.Fatalf("expected structured summary attempt metadata, got %#v", result.Structured)
 	}
-	if requestCount != 1 {
-		t.Fatalf("expected one summarizer request, got %d", requestCount)
+	if requestCount != 2 {
+		t.Fatalf("expected router + summarizer requests, got %d", requestCount)
 	}
 }
 
 func TestAnswerQueryUsesLLMClarificationWhenConfigured(t *testing.T) {
+	requestCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if requestCount == 1 {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{{
+					"message": map[string]any{"content": `{"route":"rag_query","direct_response_type":"","reason":"insurance comparison query","confidence":0.88}`},
+				}},
+			})
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"choices": []map[string]any{{
 				"message": map[string]any{"content": `{"type":"clarification_needed","needs_clarification":true,"clarification_message":"Please specify which Blue Cross and Prudential plans you want compared.","clarification_options":[{"provider":"bluecross","products":["Love Pet - Type A","Love Pet - Type B"]},{"provider":"prudential","products":["PRUChoice Furkid Care - A","PRUChoice Furkid Care - B"]}]}`},
@@ -147,6 +248,14 @@ func TestAnswerQueryFallsBackWhenJSONModeUnsupported(t *testing.T) {
 			t.Fatalf("decode summarizer request: %v", err)
 		}
 		if requestCount == 1 {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{{
+					"message": map[string]any{"content": `{"route":"rag_query","direct_response_type":"","reason":"insurance query","confidence":0.9}`},
+				}},
+			})
+			return
+		}
+		if requestCount == 2 {
 			http.Error(w, `{"code":20024,"message":"Json mode is not supported for this model.","data":null}`, http.StatusBadRequest)
 			return
 		}
@@ -174,8 +283,8 @@ func TestAnswerQueryFallsBackWhenJSONModeUnsupported(t *testing.T) {
 	if result.Answer != "Fallback JSON answer" {
 		t.Fatalf("unexpected fallback answer: %q", result.Answer)
 	}
-	if requestCount != 2 {
-		t.Fatalf("expected two summarizer requests, got %d", requestCount)
+	if requestCount != 3 {
+		t.Fatalf("expected router + two summarizer requests, got %d", requestCount)
 	}
 }
 
@@ -192,8 +301,11 @@ func TestAnswerQueryExposesSummaryFailureReason(t *testing.T) {
 	cfg.LLMTimeoutSeconds = 5
 
 	result := AnswerQuery(cfg, "What is the meaning of waiting period?", "", "", 3)
-	if result.AnswerMode != "go_no_llm_summary" {
-		t.Fatalf("expected no-llm-summary mode, got %s", result.AnswerMode)
+	if result.AnswerMode != "go_rag_fallback_summary" {
+		t.Fatalf("expected fallback summary mode, got %s", result.AnswerMode)
+	}
+	if strings.TrimSpace(result.Answer) == "" {
+		t.Fatalf("expected non-empty fallback answer, got empty")
 	}
 	if result.Structured == nil {
 		t.Fatalf("expected structured failure metadata")
@@ -201,6 +313,24 @@ func TestAnswerQueryExposesSummaryFailureReason(t *testing.T) {
 	reason, _ := result.Structured["failure_reason"].(string)
 	if !strings.Contains(reason, "status 504") {
 		t.Fatalf("expected failure reason to mention status 504, got %q", reason)
+	}
+}
+
+func TestAnswerQueryReturnsFallbackForMedicalLikeInsurancePrompt(t *testing.T) {
+	cfg := LoadConfig()
+	cfg.LLMBaseURL = ""
+	cfg.LLMModel = ""
+	cfg.LLMAPIKey = ""
+
+	result := AnswerQuery(cfg, "Pet medical consultation\n\nUser Question: Hi", "", "", 3)
+	if result.AnswerMode != "go_rag_fallback_summary" {
+		t.Fatalf("expected fallback summary mode, got %s answer=%q", result.AnswerMode, result.Answer)
+	}
+	if strings.TrimSpace(result.Answer) == "" {
+		t.Fatalf("expected non-empty fallback answer")
+	}
+	if strings.Contains(strings.ToLower(result.Answer), "service unavailable") {
+		t.Fatalf("fallback answer should not surface service-unavailable text, got %q", result.Answer)
 	}
 }
 

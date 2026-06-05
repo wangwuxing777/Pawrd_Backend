@@ -55,6 +55,13 @@ type llmSummarizer struct {
 	client  *http.Client
 }
 
+type llmRouter struct {
+	baseURL string
+	apiKey  string
+	model   string
+	client  *http.Client
+}
+
 type reranker struct {
 	baseURL string
 	apiKey  string
@@ -82,17 +89,40 @@ type providerOption struct {
 	Products []string `json:"products"`
 }
 
+type routeEnvelope struct {
+	Route              string  `json:"route"`
+	DirectResponseType string  `json:"direct_response_type"`
+	Reason             string  `json:"reason"`
+	Confidence         float64 `json:"confidence"`
+}
+
 func AnswerQuery(cfg Config, question, provider, language string, maxSources int) AnswerResult {
 	started := time.Now()
 	question = strings.TrimSpace(question)
-	disclaimer := defaultDisclaimer(language, question)
+	resolvedLanguage := responseLanguage(language, question)
+	disclaimer := defaultDisclaimer(resolvedLanguage, question)
+
+	if answer, mode, structured, ok := routeQuestion(cfg, question, resolvedLanguage); ok {
+		return AnswerResult{
+			Question:       question,
+			Provider:       provider,
+			Language:       resolvedLanguage,
+			Intent:         "retrieval",
+			Answer:         answer,
+			AnswerMode:     mode,
+			Structured:     structured,
+			Disclaimer:     disclaimer,
+			ProcessingMS:   time.Since(started).Milliseconds(),
+			Implementation: "go_rag_llm_summary_v1",
+		}
+	}
 
 	chunks, err := LoadChunks(cfg)
 	if err != nil {
 		return AnswerResult{
 			Question:       question,
 			Provider:       provider,
-			Language:       language,
+			Language:       resolvedLanguage,
 			Intent:         "retrieval",
 			Answer:         "RAG corpus loading failed in Go runtime: " + err.Error(),
 			AnswerMode:     "go_error",
@@ -113,11 +143,23 @@ func AnswerQuery(cfg Config, question, provider, language string, maxSources int
 	}
 
 	answer, mode, structured := summarizeSources(cfg, question, provider, language, sources)
+	if strings.TrimSpace(answer) == "" {
+		answer = fallbackRetrievalAnswer(question, resolvedLanguage, sources)
+		if strings.TrimSpace(answer) != "" {
+			mode = "go_rag_fallback_summary"
+			if structured == nil {
+				structured = map[string]any{}
+			}
+			structured["type"] = "rag_llm_summary_unavailable"
+			structured["fallback_mode"] = "retrieval_excerpt"
+			structured["source_count"] = len(sources)
+		}
+	}
 
 	return AnswerResult{
 		Question:       question,
 		Provider:       provider,
-		Language:       language,
+		Language:       resolvedLanguage,
 		Intent:         "retrieval",
 		Answer:         answer,
 		AnswerMode:     mode,
@@ -126,6 +168,38 @@ func AnswerQuery(cfg Config, question, provider, language string, maxSources int
 		Sources:        sources,
 		ProcessingMS:   time.Since(started).Milliseconds(),
 		Implementation: "go_rag_llm_summary_v1",
+	}
+}
+
+func routeQuestion(cfg Config, question, language string) (string, string, map[string]any, bool) {
+	router := newLLMRouter(cfg)
+	if router == nil {
+		return "", "", nil, false
+	}
+	envelope, err := router.route(question, language)
+	if err != nil {
+		return "", "", nil, false
+	}
+	switch strings.ToLower(strings.TrimSpace(envelope.Route)) {
+	case "direct_response":
+		answer := directResponseTemplate(envelope.DirectResponseType, language)
+		if answer == "" {
+			return "", "", nil, false
+		}
+		return answer, "direct_response", map[string]any{
+			"type":                 "direct_response",
+			"direct_response_type": strings.TrimSpace(envelope.DirectResponseType),
+			"router_reason":        strings.TrimSpace(envelope.Reason),
+			"router_confidence":    envelope.Confidence,
+		}, true
+	case "out_of_scope":
+		return outOfScopeResponse(language), "out_of_scope", map[string]any{
+			"type":              "out_of_scope",
+			"router_reason":     strings.TrimSpace(envelope.Reason),
+			"router_confidence": envelope.Confidence,
+		}, true
+	default:
+		return "", "", nil, false
 	}
 }
 
@@ -140,6 +214,30 @@ func responseLanguage(language, question string) string {
 		return "zh"
 	}
 	return "en"
+}
+
+func directResponseTemplate(responseType, language string) string {
+	switch strings.ToLower(strings.TrimSpace(responseType)) {
+	case "greeting":
+		if language == "zh" {
+			return "你好，请问有什么可以帮你？"
+		}
+		return "Hi, how can I assist you today?"
+	case "capability_intro":
+		if language == "zh" {
+			return "我是一个保险相关助手，可以协助回答宠物保险保单、保障范围、等待期、保障限额、不保事项及相关保障内容的问题。"
+		}
+		return "I’m an insurance assistant. I can help answer questions about pet insurance policies, coverage, waiting periods, benefit limits, exclusions, and related policy details."
+	default:
+		return ""
+	}
+}
+
+func outOfScopeResponse(language string) string {
+	if language == "zh" {
+		return "这个问题不属于当前宠物保险知识库的处理范围。我目前主要协助回答宠物保险保单、保障范围、等待期、保障限额、不保事项及相关保障内容的问题。"
+	}
+	return "That question is outside the scope of this pet insurance knowledge service. I currently focus on pet insurance policies, coverage, waiting periods, benefit limits, exclusions, and related policy details."
 }
 
 func summarizeSources(cfg Config, question, provider, language string, sources []Source) (string, string, map[string]any) {
@@ -226,6 +324,100 @@ func buildSummarizerResult(envelope llmAnswerEnvelope, cfg Config, sourceCount i
 		"attempt":          attempt.name,
 		"source_mode":      attempt.sourceMode,
 	}
+}
+
+func newLLMRouter(cfg Config) *llmRouter {
+	if strings.TrimSpace(cfg.LLMBaseURL) == "" || strings.TrimSpace(cfg.LLMModel) == "" || strings.TrimSpace(cfg.LLMAPIKey) == "" {
+		return nil
+	}
+	timeout := time.Duration(cfg.LLMTimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 45 * time.Second
+	}
+	return &llmRouter{
+		baseURL: strings.TrimRight(cfg.LLMBaseURL, "/"),
+		apiKey:  cfg.LLMAPIKey,
+		model:   cfg.LLMModel,
+		client:  &http.Client{Timeout: timeout},
+	}
+}
+
+func (r *llmRouter) route(question, language string) (routeEnvelope, error) {
+	payload := map[string]any{
+		"model":       r.model,
+		"temperature": 0,
+		"messages": []map[string]any{
+			{
+				"role": "system",
+				"content": strings.Join([]string{
+					"You are a request router for a pet insurance assistant.",
+					"Classify the user query into exactly one route.",
+					`Return JSON only with this schema: {"route":"direct_response"|"rag_query"|"out_of_scope","direct_response_type":"greeting"|"capability_intro"|"","reason":"...","confidence":0.0}.`,
+					"Use direct_response only for lightweight conversational requests such as greetings or asking what the assistant does.",
+					"Use rag_query for pet insurance questions that should be answered from policy/corpus evidence.",
+					"Use out_of_scope for questions unrelated to pet insurance knowledge coverage.",
+					"Do not answer the user question. Only classify it.",
+				}, " "),
+			},
+			{
+				"role": "user",
+				"content": strings.Join([]string{
+					"Requested language: " + language,
+					"User question: " + question,
+				}, "\n"),
+			},
+		},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return routeEnvelope{}, err
+	}
+	req, err := http.NewRequest(http.MethodPost, r.baseURL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return routeEnvelope{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+r.apiKey)
+
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return routeEnvelope{}, err
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return routeEnvelope{}, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		msg := strings.TrimSpace(string(respBody))
+		if len(msg) > 300 {
+			msg = msg[:300] + "..."
+		}
+		return routeEnvelope{}, fmt.Errorf("router status %d body=%s", resp.StatusCode, msg)
+	}
+
+	var parsed struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		return routeEnvelope{}, err
+	}
+	if len(parsed.Choices) == 0 {
+		return routeEnvelope{}, fmt.Errorf("empty router choices")
+	}
+	content := stripCodeFence(strings.TrimSpace(parsed.Choices[0].Message.Content))
+	if content == "" {
+		return routeEnvelope{}, fmt.Errorf("empty router content")
+	}
+	var envelope routeEnvelope
+	if err := json.Unmarshal([]byte(content), &envelope); err != nil {
+		return routeEnvelope{}, fmt.Errorf("invalid router json: %w", err)
+	}
+	return envelope, nil
 }
 
 func (s *llmSummarizer) summarize(question, provider, language string, sources []Source) (llmAnswerEnvelope, error) {
@@ -938,6 +1130,59 @@ func buildSourcePayload(ch Chunk, score float64) Source {
 		Score:       score,
 		Snippet:     snippet,
 	}
+}
+
+func fallbackRetrievalAnswer(question, language string, sources []Source) string {
+	if len(sources) == 0 {
+		return ""
+	}
+
+	lead := firstMeaningfulSnippetSentence(sources[0].Snippet)
+	if lead == "" {
+		lead = compactSnippet(sources[0].Snippet, 220)
+	}
+	if lead == "" {
+		return ""
+	}
+
+	if strings.ToLower(strings.TrimSpace(language)) == "zh" || containsHan(question) {
+		return "我目前无法完成模型总结，但根据当前检索到的保单证据，最相关内容是：" + lead
+	}
+	return "I couldn't complete the model summary, but the most relevant policy evidence I found is: " + lead
+}
+
+func firstMeaningfulSnippetSentence(snippet string) string {
+	snippet = compactSnippet(snippet, 320)
+	snippet = strings.TrimSpace(snippet)
+	if snippet == "" {
+		return ""
+	}
+	lines := strings.FieldsFunc(snippet, func(r rune) bool {
+		return r == '\n' || r == '\r'
+	})
+	cleanedParts := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "> Source:") || strings.HasPrefix(line, "> Clause:") || strings.HasPrefix(line, "> Unit:") {
+			continue
+		}
+		line = strings.TrimPrefix(line, "- ")
+		line = strings.TrimPrefix(line, "* ")
+		if line != "" {
+			cleanedParts = append(cleanedParts, line)
+		}
+	}
+	if len(cleanedParts) == 0 {
+		return ""
+	}
+	text := strings.Join(cleanedParts, " ")
+	if idx := strings.IndexAny(text, ".!?。；;"); idx >= 0 {
+		text = strings.TrimSpace(text[:idx+1])
+	}
+	return compactSnippet(text, 220)
 }
 
 func compactSnippet(snippet string, limit int) string {
