@@ -173,6 +173,12 @@ func main() {
 	mux.HandleFunc("/users/{id}/following-detail", handlers.NewUserFollowingDetailHandler(db))
 	mux.HandleFunc("/users/{id}/followers-detail", handlers.NewUserFollowersDetailHandler(db))
 	mux.HandleFunc("/users/{id}/stats", handlers.NewUserStatsHandler(db))
+	mux.HandleFunc("/api/domain/families/{idOrHandle}", handlers.NewFamilyProfileHandler(db))
+	mux.HandleFunc("/api/domain/families/{idOrHandle}/follow", handlers.NewFamilyFollowHandler(db))
+	mux.HandleFunc("/api/domain/families/{idOrHandle}/followers-detail", handlers.NewFamilyFollowersDetailHandler(db))
+	mux.HandleFunc("/api/domain/family-owner/{ownerUserID}", handlers.NewFamilyProfileByOwnerHandler(db))
+	mux.HandleFunc("/api/domain/pets/{slug}", handlers.NewPetProfileHandler(db))
+	mux.HandleFunc("/api/domain/posts", handlers.NewPostPetTagsHandler(db))
 
 	// Direct messages (1-on-1 chat)
 	mux.HandleFunc("/messages/send", handlers.NewMessageSendHandler(db))
@@ -185,6 +191,7 @@ func main() {
 
 	// Seed test accounts on every startup (idempotent — skips existing)
 	SeedTestAccounts()
+	EnsureDomainSeedData(db)
 
 	// Auth endpoints
 	mux.HandleFunc("/api/auth/login", handlers.NewAuthLoginHandler())

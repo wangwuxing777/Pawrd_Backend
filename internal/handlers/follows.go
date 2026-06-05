@@ -10,6 +10,13 @@ import (
 	"gorm.io/gorm"
 )
 
+func loadFamilyByIDOrHandle(db *gorm.DB, idOrHandle string) (models.Family, error) {
+	idOrHandle = strings.TrimSpace(idOrHandle)
+	var family models.Family
+	err := db.Where("id = ? OR handle = ?", idOrHandle, idOrHandle).First(&family).Error
+	return family, err
+}
+
 // NewUserFollowHandler returns the handler for POST /users/{id}/follow.
 // It toggles the follow state for the requesting user (identified by X-User-Id).
 // Response: { "following": bool }.
@@ -302,6 +309,135 @@ func NewUserStatsHandler(db *gorm.DB) http.HandlerFunc {
 			"likeCount":      int(likeCount),
 			"viewCount":      int(viewSum.Total),
 			"isFollowing":    isFollowing,
+		})
+	}
+}
+
+// NewFamilyFollowHandler toggles whether the requester follows a family.
+// POST /api/domain/families/{idOrHandle}/follow
+// Response: { "following": bool }.
+func NewFamilyFollowHandler(db *gorm.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		EnableCors(&w)
+		if r.Method == http.MethodOptions {
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		idOrHandle := strings.TrimSpace(r.PathValue("idOrHandle"))
+		if idOrHandle == "" {
+			http.Error(w, "family id or handle required", http.StatusBadRequest)
+			return
+		}
+
+		family, err := loadFamilyByIDOrHandle(db, idOrHandle)
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				http.Error(w, "family not found", http.StatusNotFound)
+				return
+			}
+			http.Error(w, "failed to load family: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		followerUserID := strings.TrimSpace(r.Header.Get("X-User-Id"))
+		if followerUserID == "" {
+			http.Error(w, "missing X-User-Id", http.StatusUnauthorized)
+			return
+		}
+		if followerUserID == family.OwnerUserID {
+			http.Error(w, "cannot follow your own family", http.StatusBadRequest)
+			return
+		}
+
+		var following bool
+		err = db.Transaction(func(tx *gorm.DB) error {
+			var existing models.FamilyFollow
+			err := tx.Where("family_id = ? AND follower_user_id = ?", family.ID, followerUserID).First(&existing).Error
+			switch {
+			case err == nil:
+				if delErr := tx.Delete(&existing).Error; delErr != nil {
+					return delErr
+				}
+				following = false
+			case errors.Is(err, gorm.ErrRecordNotFound):
+				newFollow := models.FamilyFollow{FamilyID: family.ID, FollowerUserID: followerUserID}
+				if createErr := tx.Create(&newFollow).Error; createErr != nil {
+					return createErr
+				}
+				following = true
+			default:
+				return err
+			}
+			return nil
+		})
+		if err != nil {
+			http.Error(w, "failed to toggle family follow: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"following": following,
+		})
+	}
+}
+
+// NewFamilyFollowersDetailHandler returns GET /api/domain/families/{idOrHandle}/followers-detail.
+// Response: { "users": [ { "id", "name", "avatar" } ] }.
+func NewFamilyFollowersDetailHandler(db *gorm.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		EnableCors(&w)
+		if r.Method == http.MethodOptions {
+			return
+		}
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		idOrHandle := strings.TrimSpace(r.PathValue("idOrHandle"))
+		if idOrHandle == "" {
+			http.Error(w, "family id or handle required", http.StatusBadRequest)
+			return
+		}
+
+		family, err := loadFamilyByIDOrHandle(db, idOrHandle)
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				http.Error(w, "family not found", http.StatusNotFound)
+				return
+			}
+			http.Error(w, "failed to load family: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		var followerIDs []string
+		if err := db.Model(&models.FamilyFollow{}).
+			Where("family_id = ?", family.ID).
+			Order("created_at DESC").
+			Pluck("follower_user_id", &followerIDs).Error; err != nil {
+			http.Error(w, "failed to fetch family followers: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		type followUser struct {
+			ID     string `json:"id"`
+			Name   string `json:"name"`
+			Avatar string `json:"avatar"`
+		}
+		users := make([]followUser, 0, len(followerIDs))
+		for _, fid := range followerIDs {
+			name, avatar := resolveDMUser(db, fid)
+			users = append(users, followUser{ID: fid, Name: name, Avatar: avatar})
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"users": users,
 		})
 	}
 }

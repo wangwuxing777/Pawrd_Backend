@@ -30,6 +30,10 @@ type User struct {
 type BlogPost struct {
 	ID           string          `json:"id"`
 	AuthorID     string          `json:"authorId"`
+	FamilyID     string          `json:"family_id,omitempty"`
+	FamilyHandle string          `json:"family_handle,omitempty"`
+	FamilyName   string          `json:"family_name,omitempty"`
+	ViewerCanFollowFamily bool   `json:"viewer_can_follow_family"`
 	AuthorName   string          `json:"authorName"`
 	AuthorAvatar string          `json:"authorAvatar"`
 	Title        string          `json:"title"`

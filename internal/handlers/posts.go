@@ -15,7 +15,7 @@ import (
 // toBlogPost converts a fully-loaded models.Post (with Images/Likes/Comments preloaded)
 // into the iOS-facing BlogPost shape, including the per-viewer `IsLiked` flag.
 // `requesterID` may be empty for anonymous viewers (then `IsLiked` is always false).
-func toBlogPost(p models.Post, requesterID string) models.BlogPost {
+func toBlogPost(db *gorm.DB, p models.Post, requesterID string) models.BlogPost {
 	imageUrls := make([]string, 0, len(p.Images))
 	imageMeta := make([]models.BlogImageMeta, 0, len(p.Images))
 	for _, img := range p.Images {
@@ -45,9 +45,24 @@ func toBlogPost(p models.Post, requesterID string) models.BlogPost {
 			}
 		}
 	}
+	familyHandle := ""
+	familyName := ""
+	viewerCanFollowFamily := false
+	if db != nil && strings.TrimSpace(p.FamilyID) != "" {
+		var family models.Family
+		if err := db.Select("id", "handle", "display_name").First(&family, "id = ?", p.FamilyID).Error; err == nil {
+			familyHandle = family.Handle
+			familyName = family.DisplayName
+			viewerCanFollowFamily = requesterID != "" && requesterID != family.OwnerUserID
+		}
+	}
 	return models.BlogPost{
 		ID:           p.ID,
 		AuthorID:     p.AuthorID,
+		FamilyID:     p.FamilyID,
+		FamilyHandle: familyHandle,
+		FamilyName:   familyName,
+		ViewerCanFollowFamily: viewerCanFollowFamily,
 		AuthorName:   p.AuthorName,
 		AuthorAvatar: p.AuthorAvatar,
 		Title:        p.Title,
@@ -166,15 +181,15 @@ func NewPostsHandler(db *gorm.DB) http.HandlerFunc {
 					requesterID = followerID
 				}
 
-				var followeeIDs []string
-				if err := db.Model(&models.UserFollow{}).
-					Where("follower_id = ?", followerID).
-					Pluck("followee_id", &followeeIDs).Error; err != nil {
-					http.Error(w, "Failed to fetch following: "+err.Error(), http.StatusInternalServerError)
+				var followedFamilyIDs []string
+				if err := db.Model(&models.FamilyFollow{}).
+					Where("follower_user_id = ?", followerID).
+					Pluck("family_id", &followedFamilyIDs).Error; err != nil {
+					http.Error(w, "Failed to fetch followed families: "+err.Error(), http.StatusInternalServerError)
 					return
 				}
 
-				if len(followeeIDs) == 0 {
+				if len(followedFamilyIDs) == 0 {
 					w.Header().Set("Content-Type", "application/json")
 					if usePaging {
 						w.Header().Set("X-Has-More", "false")
@@ -183,7 +198,7 @@ func NewPostsHandler(db *gorm.DB) http.HandlerFunc {
 					return
 				}
 
-				query = query.Where("author_id IN ?", followeeIDs)
+				query = query.Where("family_id IN ?", followedFamilyIDs)
 			} else if feedType == "my_posts" {
 				if requesterID == "" {
 					http.Error(w, "missing user id", http.StatusUnauthorized)
@@ -266,7 +281,7 @@ func NewPostsHandler(db *gorm.DB) http.HandlerFunc {
 
 			result := make([]models.BlogPost, 0, len(posts))
 			for _, p := range posts {
-				result = append(result, toBlogPost(p, requesterID))
+				result = append(result, toBlogPost(db, p, requesterID))
 			}
 			w.Header().Set("Content-Type", "application/json")
 			if usePaging {
@@ -278,7 +293,6 @@ func NewPostsHandler(db *gorm.DB) http.HandlerFunc {
 			json.NewEncoder(w).Encode(result)
 
 		case http.MethodPost:
-			// Decode body fields: title, content, imageColor, imageUrls
 			var body struct {
 				Title        string   `json:"title"`
 				Content      string   `json:"content"`
@@ -286,6 +300,7 @@ func NewPostsHandler(db *gorm.DB) http.HandlerFunc {
 				Location     string   `json:"location"`
 				Visibility   string   `json:"visibility"`
 				AllowComment *bool    `json:"allowComment"`
+				PetIDs       []string `json:"pet_ids"`
 				ImageUrls    []string `json:"imageUrls"`
 				ImageMeta    []struct {
 					URL          string `json:"url"`
@@ -316,6 +331,44 @@ func NewPostsHandler(db *gorm.DB) http.HandlerFunc {
 			if authorID == "" {
 				authorID = authorName
 			}
+
+			var familyID string
+			if authorID != "" {
+				var family models.Family
+				if err := db.Select("id").Where("owner_user_id = ?", authorID).First(&family).Error; err == nil {
+					familyID = family.ID
+				}
+			}
+
+			normalizedPetIDs := make([]string, 0, len(body.PetIDs))
+			seenPetIDs := make(map[string]struct{}, len(body.PetIDs))
+			for _, rawPetID := range body.PetIDs {
+				petID := strings.TrimSpace(rawPetID)
+				if petID == "" {
+					continue
+				}
+				if _, exists := seenPetIDs[petID]; exists {
+					continue
+				}
+				seenPetIDs[petID] = struct{}{}
+				normalizedPetIDs = append(normalizedPetIDs, petID)
+			}
+			if len(normalizedPetIDs) > 0 && familyID == "" {
+				http.Error(w, "family-owned posts required for pet tags", http.StatusBadRequest)
+				return
+			}
+
+			if len(normalizedPetIDs) > 0 {
+				var ownedPets []models.Pet
+				if err := db.Select("id", "family_id").Where("id IN ? AND family_id = ?", normalizedPetIDs, familyID).Find(&ownedPets).Error; err != nil {
+					http.Error(w, "failed to validate pet tags: "+err.Error(), http.StatusInternalServerError)
+					return
+				}
+				if len(ownedPets) != len(normalizedPetIDs) {
+					http.Error(w, "pet tags must belong to the author's family", http.StatusBadRequest)
+					return
+				}
+			}
 			imageColor := body.ImageColor
 			if imageColor == "" {
 				imageColor = "blue"
@@ -332,6 +385,7 @@ func NewPostsHandler(db *gorm.DB) http.HandlerFunc {
 
 			post := models.Post{
 				AuthorID:     authorID,
+				FamilyID:     familyID,
 				AuthorName:   authorName,
 				AuthorAvatar: authorAvatar,
 				Title:        body.Title,
@@ -373,9 +427,22 @@ func NewPostsHandler(db *gorm.DB) http.HandlerFunc {
 				}
 			}
 
+			for idx, petID := range normalizedPetIDs {
+				tag := models.PostPetTag{
+					PostID:    post.ID,
+					PetID:     petID,
+					IsPrimary: idx == 0,
+				}
+				if err := db.Create(&tag).Error; err != nil {
+					http.Error(w, "Failed to save pet tags: "+err.Error(), http.StatusInternalServerError)
+					return
+				}
+			}
+
 			response := models.BlogPost{
 				ID:           post.ID,
 				AuthorID:     post.AuthorID,
+				FamilyID:     post.FamilyID,
 				AuthorName:   post.AuthorName,
 				AuthorAvatar: post.AuthorAvatar,
 				Title:        post.Title,
@@ -388,6 +455,7 @@ func NewPostsHandler(db *gorm.DB) http.HandlerFunc {
 				Comments:     0,
 				Timestamp:    post.CreatedAt,
 				ImageUrls:    body.ImageUrls,
+				ViewerCanFollowFamily: false,
 			}
 			if len(body.ImageMeta) > 0 {
 				meta := make([]models.BlogImageMeta, 0, len(body.ImageMeta))
@@ -475,7 +543,7 @@ func NewPostSearchHandler(db *gorm.DB) http.HandlerFunc {
 		requesterID := strings.TrimSpace(r.Header.Get("X-User-Id"))
 		result := make([]models.BlogPost, 0, len(posts))
 		for _, p := range posts {
-			result = append(result, toBlogPost(p, requesterID))
+			result = append(result, toBlogPost(db, p, requesterID))
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -535,7 +603,7 @@ func NewPostDetailHandler(db *gorm.DB) http.HandlerFunc {
 			}
 
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(toBlogPost(post, requesterID))
+			_ = json.NewEncoder(w).Encode(toBlogPost(db, post, requesterID))
 
 		case http.MethodDelete:
 			requesterID := strings.TrimSpace(r.Header.Get("X-User-Id"))

@@ -191,7 +191,7 @@ func TestChatProxyFallsBackToGoWhenPythonUnavailable(t *testing.T) {
 	}
 }
 
-func TestChatProxyReturnsInProcessFailureInsteadOfHTTPFallback(t *testing.T) {
+func TestChatProxyReturnsFallbackAnswerInsteadOfHTTPFallback(t *testing.T) {
 	t.Setenv("HK_INSURANCE_RAG_DATA_PATH", "../../assets/rag_normalized/hk_insurance")
 	t.Setenv("HK_INSURANCE_RAG_MAX_SOURCES", "6")
 	t.Setenv("GO_RAG_INPROCESS_ENABLED", "true")
@@ -220,14 +220,14 @@ func TestChatProxyReturnsInProcessFailureInsteadOfHTTPFallback(t *testing.T) {
 	rr := httptest.NewRecorder()
 	handler(rr, req)
 
-	if rr.Code != http.StatusBadGateway {
-		t.Fatalf("expected status=502 got=%d body=%s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status=200 got=%d body=%s", rr.Code, rr.Body.String())
 	}
 	if strings.Contains(rr.Body.String(), "127.0.0.1:9/query") {
 		t.Fatalf("expected no HTTP fallback loopback error, got body=%s", rr.Body.String())
 	}
-	if !strings.Contains(rr.Body.String(), "go rag in-process failed") {
-		t.Fatalf("expected in-process failure detail, got body=%s", rr.Body.String())
+	if !strings.Contains(rr.Body.String(), "I couldn't complete the model summary") {
+		t.Fatalf("expected fallback answer, got body=%s", rr.Body.String())
 	}
 }
 
