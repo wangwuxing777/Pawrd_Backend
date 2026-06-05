@@ -128,7 +128,6 @@ type petProfilePayload struct {
 	Bio               string            `json:"bio,omitempty"`
 	DerivedSummary    map[string]any    `json:"derived_summary"`
 	Visibility        map[string]bool   `json:"visibility"`
-	TaggedPosts       []models.BlogPost `json:"tagged_posts"`
 }
 
 func NewFamilyProfileHandler(db *gorm.DB) http.HandlerFunc {
@@ -235,30 +234,6 @@ func NewPetProfileHandler(db *gorm.DB) http.HandlerFunc {
 			return
 		}
 
-		var tags []models.PostPetTag
-		if err := db.Where("pet_id = ?", pet.ID).Find(&tags).Error; err != nil {
-			http.Error(w, "failed to load pet tags: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		postIDs := make([]string, 0, len(tags))
-		for _, tag := range tags {
-			postIDs = append(postIDs, tag.PostID)
-		}
-		var posts []models.Post
-		if len(postIDs) > 0 {
-			if err := db.Preload("Images").Preload("Likes").Preload("Comments").Preload("Collections").
-				Where("id IN ? AND visibility = ?", postIDs, "public").
-				Order("created_at DESC").
-				Find(&posts).Error; err != nil {
-				http.Error(w, "failed to load tagged posts: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
-		}
-		blogPosts := make([]models.BlogPost, 0, len(posts))
-		for _, post := range posts {
-			blogPosts = append(blogPosts, toBlogPost(db, post, strings.TrimSpace(r.Header.Get("X-User-Id"))))
-		}
-
 		derived := map[string]any{
 			"display_age": pet.DerivedSummary.DisplayAge,
 		}
@@ -291,7 +266,6 @@ func NewPetProfileHandler(db *gorm.DB) http.HandlerFunc {
 				"show_vaccine_status": pet.VisibilitySettings.ShowVaccineStatus,
 				"show_family_link":    pet.VisibilitySettings.ShowFamilyLink,
 			},
-			TaggedPosts: blogPosts,
 		}
 		if pet.VisibilitySettings.ShowBreed {
 			payload.Breed = pet.Breed
