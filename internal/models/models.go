@@ -51,6 +51,24 @@ type BlogPost struct {
 	ImageMeta    []BlogImageMeta `json:"imageMeta,omitempty"`
 	IsLiked      bool            `json:"isLiked"`     // whether the requesting user has liked this post
 	IsCollected  bool            `json:"isCollected"` // whether the requesting user has collected this post
+	Poll         *BlogPoll       `json:"poll,omitempty"`
+}
+
+// BlogPoll is the iOS-facing poll payload embedded in a post. Vote counts are
+// aggregated and `VotedOptionID` is the requesting viewer's current choice
+// (empty when they have not voted).
+type BlogPoll struct {
+	ID            string           `json:"id"`
+	Question      string           `json:"question"`
+	TotalVotes    int              `json:"totalVotes"`
+	VotedOptionID string           `json:"votedOptionId,omitempty"`
+	Options       []BlogPollOption `json:"options"`
+}
+
+type BlogPollOption struct {
+	ID    string `json:"id"`
+	Text  string `json:"text"`
+	Votes int    `json:"votes"`
 }
 
 type BlogImageMeta struct {

@@ -1,9 +1,14 @@
 package handlers
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"hash/fnv"
+	"math/rand"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -80,7 +85,178 @@ func toBlogPost(db *gorm.DB, p models.Post, requesterID string) models.BlogPost 
 		ImageMeta:    imageMeta,
 		IsLiked:      isLiked,
 		IsCollected:  isCollected,
+		Poll:         loadBlogPoll(db, p.ID, requesterID),
 	}
+}
+
+// loadBlogPoll returns the poll attached to a post (or nil when there is none),
+// with aggregated per-option vote counts and the requester's current choice.
+func loadBlogPoll(db *gorm.DB, postID, requesterID string) *models.BlogPoll {
+	if db == nil {
+		return nil
+	}
+	var poll models.PostPoll
+	if err := db.
+		Preload("Options", func(d *gorm.DB) *gorm.DB { return d.Order("sort_order ASC") }).
+		First(&poll, "post_id = ?", postID).Error; err != nil {
+		return nil
+	}
+
+	type voteCount struct {
+		OptionID string
+		C        int
+	}
+	var counts []voteCount
+	db.Model(&models.PostPollVote{}).
+		Select("option_id, count(*) as c").
+		Where("poll_id = ?", poll.ID).
+		Group("option_id").
+		Scan(&counts)
+
+	countByOption := make(map[string]int, len(counts))
+	total := 0
+	for _, c := range counts {
+		countByOption[c.OptionID] = c.C
+		total += c.C
+	}
+
+	votedOptionID := ""
+	if strings.TrimSpace(requesterID) != "" {
+		var v models.PostPollVote
+		if err := db.Select("option_id").
+			Where("poll_id = ? AND user_id = ?", poll.ID, requesterID).
+			First(&v).Error; err == nil {
+			votedOptionID = v.OptionID
+		}
+	}
+
+	options := make([]models.BlogPollOption, 0, len(poll.Options))
+	for _, o := range poll.Options {
+		options = append(options, models.BlogPollOption{
+			ID:    o.ID,
+			Text:  o.Text,
+			Votes: countByOption[o.ID],
+		})
+	}
+
+	return &models.BlogPoll{
+		ID:            poll.ID,
+		Question:      poll.Question,
+		TotalVotes:    total,
+		VotedOptionID: votedOptionID,
+		Options:       options,
+	}
+}
+
+// serveExploreFeed renders the Discover feed: every refresh reshuffles the order
+// (seeded so pagination within one refresh stays consistent), and posts the
+// viewer hasn't opened are surfaced ahead of ones they have. The pagination
+// cursor is the opaque string "seed:offset"; an absent cursor (a fresh refresh)
+// draws a new seed, so the next refresh reshuffles and brings up unseen posts.
+func serveExploreFeed(w http.ResponseWriter, db *gorm.DB, requesterID string, limit int, cursorStr string) {
+	if limit <= 0 {
+		limit = 20
+	}
+
+	var seed int64
+	offset := 0
+	if cursorStr != "" {
+		parts := strings.SplitN(cursorStr, ":", 2)
+		if len(parts) == 2 {
+			seed, _ = strconv.ParseInt(parts[0], 10, 64)
+			offset, _ = strconv.Atoi(parts[1])
+		}
+	}
+	if seed == 0 {
+		seed = rand.Int63()
+		if seed == 0 {
+			seed = 1
+		}
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	// All candidate post IDs (created_at gives stable tie-breaking before shuffle).
+	var ids []string
+	if err := db.Model(&models.Post{}).Order("created_at DESC").Pluck("id", &ids).Error; err != nil {
+		http.Error(w, "failed to list posts: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Which posts this viewer has already opened.
+	seen := make(map[string]bool)
+	if requesterID != "" {
+		var seenIDs []string
+		db.Model(&models.PostView{}).Where("user_id = ?", requesterID).Pluck("post_id", &seenIDs)
+		for _, id := range seenIDs {
+			seen[id] = true
+		}
+	}
+
+	// Unseen first; shuffle within each group by a seed-stable hash.
+	sort.SliceStable(ids, func(i, j int) bool {
+		si, sj := seen[ids[i]], seen[ids[j]]
+		if si != sj {
+			return !si // unseen (false) sorts before seen (true)
+		}
+		return shuffleKey(ids[i], seed) < shuffleKey(ids[j], seed)
+	})
+
+	total := len(ids)
+	start := offset
+	if start > total {
+		start = total
+	}
+	end := start + limit
+	if end > total {
+		end = total
+	}
+	pageIDs := ids[start:end]
+	hasMore := end < total
+
+	result := make([]models.BlogPost, 0, len(pageIDs))
+	if len(pageIDs) > 0 {
+		var pagePosts []models.Post
+		if err := db.
+			Preload("Images").
+			Preload("Likes").
+			Preload("Comments").
+			Preload("Collections").
+			Where("id IN ?", pageIDs).
+			Find(&pagePosts).Error; err != nil {
+			http.Error(w, "failed to load posts: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		byID := make(map[string]models.Post, len(pagePosts))
+		for _, p := range pagePosts {
+			byID[p.ID] = p
+		}
+		// Emit in the shuffled order, not the DB's IN() order.
+		for _, id := range pageIDs {
+			if p, ok := byID[id]; ok {
+				result = append(result, toBlogPost(db, p, requesterID))
+			}
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Has-More", strconv.FormatBool(hasMore))
+	if hasMore {
+		w.Header().Set("X-Next-Cursor", fmt.Sprintf("%d:%d", seed, end))
+	}
+	_ = json.NewEncoder(w).Encode(result)
+}
+
+// shuffleKey is a deterministic per-(post, seed) sort key, so a given seed always
+// produces the same shuffle but a new seed reshuffles.
+func shuffleKey(id string, seed int64) uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(id))
+	var b [8]byte
+	binary.LittleEndian.PutUint64(b[:], uint64(seed))
+	_, _ = h.Write(b[:])
+	return h.Sum64()
 }
 
 // NewPostHotKeywordsHandler returns suggested search keywords derived from recent popular posts.
@@ -168,6 +344,15 @@ func NewPostsHandler(db *gorm.DB) http.HandlerFunc {
 				Order("created_at DESC")
 
 			requesterID := strings.TrimSpace(r.Header.Get("X-User-Id"))
+
+			// Discover feed: shuffled per refresh, with posts the viewer hasn't
+			// opened pushed to the front. Handled separately from the time-ordered
+			// feeds below.
+			if feedType == "" {
+				serveExploreFeed(w, db, requesterID, limit, cursorStr)
+				return
+			}
+
 			if feedType == "following" {
 				followerID := strings.TrimSpace(r.URL.Query().Get("userId"))
 				if followerID == "" {
@@ -308,6 +493,10 @@ func NewPostsHandler(db *gorm.DB) http.HandlerFunc {
 					Width        int    `json:"width"`
 					Height       int    `json:"height"`
 				} `json:"imageMeta"`
+				Poll *struct {
+					Question string   `json:"question"`
+					Options  []string `json:"options"`
+				} `json:"poll"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				http.Error(w, "Invalid request body", http.StatusBadRequest)
@@ -439,6 +628,25 @@ func NewPostsHandler(db *gorm.DB) http.HandlerFunc {
 				}
 			}
 
+			// Persist an optional poll (question + at least two non-empty options).
+			if body.Poll != nil {
+				question := strings.TrimSpace(body.Poll.Question)
+				options := make([]string, 0, len(body.Poll.Options))
+				for _, opt := range body.Poll.Options {
+					if t := strings.TrimSpace(opt); t != "" {
+						options = append(options, t)
+					}
+				}
+				if question != "" && len(options) >= 2 {
+					poll := models.PostPoll{PostID: post.ID, Question: question}
+					if err := db.Create(&poll).Error; err == nil {
+						for i, t := range options {
+							db.Create(&models.PostPollOption{PollID: poll.ID, Text: t, SortOrder: i})
+						}
+					}
+				}
+			}
+
 			response := models.BlogPost{
 				ID:           post.ID,
 				AuthorID:     post.AuthorID,
@@ -472,6 +680,7 @@ func NewPostsHandler(db *gorm.DB) http.HandlerFunc {
 				}
 				response.ImageMeta = meta
 			}
+			response.Poll = loadBlogPoll(db, post.ID, authorID)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(response)
@@ -602,6 +811,14 @@ func NewPostDetailHandler(db *gorm.DB) http.HandlerFunc {
 				}
 			}
 
+			// Remember that this viewer has now seen the post, so the Discover
+			// feed can push posts they haven't opened to the front.
+			if requesterID != "" {
+				view := models.PostView{UserID: requesterID, PostID: postID}
+				db.Where("user_id = ? AND post_id = ?", requesterID, postID).
+					FirstOrCreate(&view)
+			}
+
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(toBlogPost(db, post, requesterID))
 
@@ -637,6 +854,19 @@ func NewPostDetailHandler(db *gorm.DB) http.HandlerFunc {
 				}
 				if err := tx.Where("post_id = ?", postID).Delete(&models.PostComment{}).Error; err != nil {
 					return err
+				}
+				// Tear down the poll (votes → options → poll) before the post row.
+				var poll models.PostPoll
+				if err := tx.Where("post_id = ?", postID).First(&poll).Error; err == nil {
+					if err := tx.Where("poll_id = ?", poll.ID).Delete(&models.PostPollVote{}).Error; err != nil {
+						return err
+					}
+					if err := tx.Where("poll_id = ?", poll.ID).Delete(&models.PostPollOption{}).Error; err != nil {
+						return err
+					}
+					if err := tx.Delete(&poll).Error; err != nil {
+						return err
+					}
 				}
 				return tx.Delete(&post).Error
 			})

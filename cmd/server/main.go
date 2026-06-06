@@ -167,6 +167,7 @@ func main() {
 	mux.HandleFunc("/posts/{id}/comments", handlers.NewPostCommentsHandler(db))
 	mux.HandleFunc("/posts/{id}/comments/{commentId}", handlers.NewCommentDeleteHandler(db))
 	mux.HandleFunc("/posts/{id}/share", handlers.NewPostShareHandler(db))
+	mux.HandleFunc("/posts/{id}/poll/vote", handlers.NewPostPollVoteHandler(db))
 	mux.HandleFunc("/users/{id}/follow", handlers.NewUserFollowHandler(db))
 	mux.HandleFunc("/users/{id}/followers", handlers.NewUserFollowersHandler(db))
 	mux.HandleFunc("/users/{id}/following", handlers.NewUserFollowingHandler(db))
