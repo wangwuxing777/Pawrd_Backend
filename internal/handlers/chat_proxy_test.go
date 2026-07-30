@@ -290,6 +290,108 @@ func TestChatProxyUsesGoRuntimeWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestChatProxyMedicalModelCallsDirectLLMWithoutRAG(t *testing.T) {
+	requestCount := 0
+	llmUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if r.URL.Path != "/chat/completions" {
+			t.Fatalf("unexpected medical AI path: %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-stepfun-key" {
+			t.Fatalf("unexpected authorization header: %q", got)
+		}
+		var payload struct {
+			Model    string `json:"model"`
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode medical payload: %v", err)
+		}
+		if payload.Model != "step-3.5-flash" {
+			t.Fatalf("unexpected model: %q", payload.Model)
+		}
+		if len(payload.Messages) != 2 ||
+			!strings.Contains(payload.Messages[0].Content, "veterinary medical information assistant") ||
+			!strings.Contains(payload.Messages[1].Content, "elevated ALT") {
+			t.Fatalf("unexpected medical messages: %#v", payload.Messages)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]any{
+					"content": "The report shows elevated ALT. Veterinary follow-up is appropriate.",
+				},
+			}},
+		})
+	}))
+	defer llmUpstream.Close()
+
+	cfg := &config.Config{
+		PythonRAGBaseURL:        "http://127.0.0.1:9",
+		PythonRAGTimeoutSeconds: 1,
+		GoRAGBaseURL:            "http://127.0.0.1:9",
+		GoRAGTimeoutSeconds:     1,
+		ChatRAGRuntime:          "go",
+		RAGLLMBaseURL:           llmUpstream.URL,
+		RAGLLMModel:             "step-3.5-flash",
+		RAGLLMAPIKey:            "test-stepfun-key",
+		RAGLLMTimeoutSeconds:    5,
+	}
+	handler := NewChatProxyHandler(cfg, NewChatSessionStore())
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/chat",
+		strings.NewReader(`{"query":"Health report: elevated ALT","model":"medical"}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	handler(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status=200 got=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if requestCount != 1 {
+		t.Fatalf("expected exactly one direct LLM call, got %d", requestCount)
+	}
+	var response legacyChatResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode medical response: %v", err)
+	}
+	if !strings.Contains(response.Answer, "elevated ALT") {
+		t.Fatalf("unexpected medical answer: %q", response.Answer)
+	}
+	if len(response.Sources) != 0 {
+		t.Fatalf("direct medical model must not return RAG sources: %#v", response.Sources)
+	}
+}
+
+func TestChatProxyMedicalModelReportsMissingLLMConfig(t *testing.T) {
+	cfg := &config.Config{
+		PythonRAGBaseURL:        "http://127.0.0.1:9",
+		PythonRAGTimeoutSeconds: 1,
+		GoRAGBaseURL:            "http://127.0.0.1:9",
+		GoRAGTimeoutSeconds:     1,
+		ChatRAGRuntime:          "go",
+	}
+	handler := NewChatProxyHandler(cfg, NewChatSessionStore())
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/chat",
+		strings.NewReader(`{"query":"Summarize this report","model":"medical"}`),
+	)
+	rr := httptest.NewRecorder()
+
+	handler(rr, req)
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("expected status=502 got=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "medical AI is not configured") {
+		t.Fatalf("expected configuration error, got %s", rr.Body.String())
+	}
+}
+
 func TestChatProxyUsesSessionProviderFallback(t *testing.T) {
 	var capturedProvider string
 	pythonUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

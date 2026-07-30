@@ -210,6 +210,7 @@ func NewChatSessionProviderHandler(store *chatSessionStore) http.HandlerFunc {
 func NewChatProxyHandler(cfg *config.Config, store *chatSessionStore) http.HandlerFunc {
 	pythonClient := newPythonRAGClient(cfg)
 	goClient := newGoRAGClient(cfg)
+	medicalClient := newMedicalAIClient(cfg)
 	runtimeName := strings.ToLower(strings.TrimSpace(cfg.ChatRAGRuntime))
 	if runtimeName != "go" {
 		runtimeName = "python"
@@ -235,12 +236,29 @@ func NewChatProxyHandler(cfg *config.Config, store *chatSessionStore) http.Handl
 			writeChatJSON(w, http.StatusBadRequest, errorResponse{Detail: "query is required"})
 			return
 		}
-		if strings.TrimSpace(req.Model) != "" && strings.TrimSpace(req.Model) != "insurance" {
-			writeChatJSON(w, http.StatusBadRequest, errorResponse{Detail: "only insurance model is currently supported"})
+		model := strings.ToLower(strings.TrimSpace(req.Model))
+		if model == "" {
+			model = "insurance"
+		}
+		if model != "insurance" && model != "medical" {
+			writeChatJSON(w, http.StatusBadRequest, errorResponse{Detail: "model must be one of: insurance, medical"})
 			return
 		}
 		if strings.TrimSpace(req.Tool) != "" && strings.TrimSpace(req.Tool) != "general_assistant" {
 			writeChatJSON(w, http.StatusBadRequest, errorResponse{Detail: "medical tool flow is not currently supported by this proxy"})
+			return
+		}
+		if model == "medical" {
+			answer, err := medicalClient.summarize(req.Query)
+			if err != nil {
+				writeChatJSON(w, http.StatusBadGateway, errorResponse{Detail: err.Error()})
+				return
+			}
+			writeChatJSON(w, http.StatusOK, legacyChatResponse{
+				Answer:    answer,
+				Sources:   []string{},
+				SessionID: strings.TrimSpace(req.SessionID),
+			})
 			return
 		}
 

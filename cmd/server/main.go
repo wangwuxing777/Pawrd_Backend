@@ -301,6 +301,7 @@ func main() {
 	mux.HandleFunc("/coverage-list", handlers.CoverageListHandler)
 	mux.HandleFunc("/coverage-limits", handlers.CoverageLimitsHandler)
 	mux.HandleFunc("/sub-coverage-limits", handlers.SubCoverageLimitsHandler)
+	mux.HandleFunc("/api/insurance/recommend", handlers.NewInsuranceRecommendationHandler())
 
 	// Legacy handlers
 	mux.HandleFunc("/insurance-providers", handlers.InsuranceProvidersHandler)
