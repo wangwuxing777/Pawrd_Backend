@@ -14,6 +14,7 @@ import (
 
 type Config struct {
 	MapsAPIKey                    string
+	PlacesAPIKey                  string
 	JWTSecret                     string
 	DatabaseURL                   string
 	DBHost                        string
@@ -66,10 +67,15 @@ type Config struct {
 
 func LoadConfig() *Config {
 	_ = godotenv.Load() // Ignore error if .env doesn't exist
-	mapsKey := os.Getenv("MAPS_API_KEY")
+	mapsKey := strings.TrimSpace(os.Getenv("MAPS_API_KEY"))
+	placesKey := strings.TrimSpace(os.Getenv("GOOGLE_PLACES_API_KEY"))
+	if placesKey == "" {
+		placesKey = mapsKey
+	}
 
 	return &Config{
 		MapsAPIKey:                    mapsKey,
+		PlacesAPIKey:                  placesKey,
 		JWTSecret:                     strings.TrimSpace(os.Getenv("JWT_SECRET")),
 		DatabaseURL:                   strings.TrimSpace(os.Getenv("DATABASE_URL")),
 		DBHost:                        getEnvOrDefault("DB_HOST", "localhost"),

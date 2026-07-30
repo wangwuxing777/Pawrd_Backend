@@ -320,7 +320,7 @@ func main() {
 	mux.HandleFunc("/api/rag/go/readyz", handlers.NewGoRAGReadyzHandler())
 
 	// Vets handler
-	placesClient := places.NewClient(cfg.MapsAPIKey)
+	placesClient := places.NewClient(cfg.PlacesAPIKey)
 	mux.HandleFunc("/api/vets", handlers.NewVetsHandler(placesClient))
 
 	// Shop handlers
