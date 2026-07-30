@@ -194,6 +194,22 @@ func main() {
 	go fulfillmentQueue.Run(context.Background())
 	go refundMirrorQueue.Run(context.Background())
 	go compensationRefundQueue.Run(context.Background())
+	if shopifyAdmin != nil {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			repaired, err := payments.RepairMappedShopifyOrderAddresses(
+				ctx,
+				db,
+				shopifyAdmin,
+				100,
+			)
+			if err != nil {
+				log.Printf("Shopify legacy order address repair incomplete: %v", err)
+			}
+			log.Printf("Shopify legacy order addresses repaired: %d", repaired)
+		}()
+	}
 
 	// Initialize new Gin router for scenarios API
 	insuranceV1Router := handlers.NewInsuranceV1Handler(db)
