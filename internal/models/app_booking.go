@@ -11,6 +11,7 @@ import (
 // It is intentionally consumer-facing metadata only, never merchant truth.
 type AppBookingMirror struct {
 	ID                            string     `gorm:"type:text;primaryKey" json:"id"`
+	UserID                        string     `gorm:"type:text;index;not null;default:''" json:"-"`
 	ExternalBookingID             string     `gorm:"type:text;uniqueIndex;not null" json:"external_booking_id"`
 	ClinicID                      string     `gorm:"type:text;index;not null" json:"clinic_id"`
 	BookingClinicID               string     `gorm:"type:text;index;default:''" json:"-"`

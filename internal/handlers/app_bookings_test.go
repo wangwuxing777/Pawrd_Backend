@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wangwuxing777/Pawrd_Backend/internal/auth"
 	"github.com/wangwuxing777/Pawrd_Backend/internal/models"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -35,6 +36,126 @@ func newTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("migrate: %v", err)
 	}
 	return db
+}
+
+func bookingTestToken(t *testing.T, userID string) string {
+	t.Helper()
+	t.Setenv("JWT_SECRET", "test-only-booking-jwt-secret-at-least-32-characters")
+	token, err := auth.GenerateToken(userID, userID+"@example.com", userID)
+	if err != nil {
+		t.Fatalf("generate booking token: %v", err)
+	}
+	return token
+}
+
+func bookingCreateRequest(t *testing.T, token string) *http.Request {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{
+		"clinic_id":      "clinic-1",
+		"pet_id":         "pet-123",
+		"service_type":   "vaccine",
+		"scheduled_date": "2026-04-12T10:00:00Z",
+		"notes":          "OwnerName: Ada | OwnerEmail: ada@example.com | OwnerPhone: +85212345678 | Pet: Mochi",
+	})
+	if err != nil {
+		t.Fatalf("encode booking request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/bookings", bytes.NewReader(body))
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	return req
+}
+
+func TestAppBookingsRequireBearerJWT(t *testing.T) {
+	db := newTestDB(t)
+	gatewayCalled := false
+	gateway := fakeGateway{send: func(context.Context, string, string, url.Values, []byte, map[string]string) (int, string, []byte, error) {
+		gatewayCalled = true
+		return http.StatusInternalServerError, "application/json", nil, nil
+	}}
+
+	rec := httptest.NewRecorder()
+	NewAppBookingsHandler(db, gateway).ServeHTTP(rec, bookingCreateRequest(t, ""))
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if gatewayCalled {
+		t.Fatal("merchant gateway must not be called without an authenticated user")
+	}
+}
+
+func TestAuthenticatedBookingsPersistAndEnforceUserOwnership(t *testing.T) {
+	db := newTestDB(t)
+	callCount := 0
+	gateway := fakeGateway{send: func(_ context.Context, method, path string, _ url.Values, _ []byte, _ map[string]string) (int, string, []byte, error) {
+		if method != http.MethodPost || path != "/app/v1/vaccinations/bookings" {
+			t.Fatalf("unexpected gateway request: %s %s", method, path)
+		}
+		callCount++
+		externalID := fmt.Sprintf("ext-owner-%d", callCount)
+		return http.StatusOK, "application/json", []byte(fmt.Sprintf(
+			`{"code":0,"message":"ok","data":{"external_booking_id":%q,"clinic_integration_id":"clinic-1","status":"requested","scheduled_at":"2026-04-12T10:00:00Z","created_at":"2026-04-11T12:00:00Z","updated_at":"2026-04-11T12:00:00Z","merchant_status":{"appointment_status":"pending"}}}`,
+			externalID,
+		)), nil
+	}}
+
+	for _, userID := range []string{"user-a", "user-b"} {
+		rec := httptest.NewRecorder()
+		NewAppBookingsHandler(db, gateway).ServeHTTP(
+			rec,
+			bookingCreateRequest(t, bookingTestToken(t, userID)),
+		)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("create for %s: expected 200, got %d body=%s", userID, rec.Code, rec.Body.String())
+		}
+	}
+
+	var mirrors []models.AppBookingMirror
+	if err := db.Order("external_booking_id").Find(&mirrors).Error; err != nil {
+		t.Fatalf("query mirrors: %v", err)
+	}
+	if len(mirrors) != 2 || mirrors[0].UserID != "user-a" || mirrors[1].UserID != "user-b" {
+		t.Fatalf("expected user-owned mirrors, got %+v", mirrors)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/bookings", nil)
+	listReq.Header.Set("Authorization", "Bearer "+bookingTestToken(t, "user-a"))
+	listRec := httptest.NewRecorder()
+	NewAppBookingsHandler(db, fakeGateway{}).ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list: expected 200, got %d body=%s", listRec.Code, listRec.Body.String())
+	}
+	var list appBookingListResponse
+	if err := json.Unmarshal(listRec.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(list.Bookings) != 1 || list.Bookings[0].ID != mirrors[0].ID {
+		t.Fatalf("expected only user-a booking, got %+v", list.Bookings)
+	}
+
+	detailReq := httptest.NewRequest(http.MethodGet, "/api/bookings/"+mirrors[0].ID, nil)
+	detailReq.SetPathValue("bookingID", mirrors[0].ID)
+	detailReq.Header.Set("Authorization", "Bearer "+bookingTestToken(t, "user-b"))
+	detailRec := httptest.NewRecorder()
+	NewAppBookingDetailHandler(db, fakeGateway{}).ServeHTTP(detailRec, detailReq)
+	if detailRec.Code != http.StatusNotFound {
+		t.Fatalf("cross-user detail must be hidden: expected 404, got %d body=%s", detailRec.Code, detailRec.Body.String())
+	}
+
+	patchReq := httptest.NewRequest(
+		http.MethodPatch,
+		"/api/bookings/"+mirrors[0].ID,
+		bytes.NewBufferString(`{"status":"cancelled"}`),
+	)
+	patchReq.SetPathValue("bookingID", mirrors[0].ID)
+	patchReq.Header.Set("Authorization", "Bearer "+bookingTestToken(t, "user-b"))
+	patchRec := httptest.NewRecorder()
+	NewAppBookingDetailHandler(db, fakeGateway{}).ServeHTTP(patchRec, patchReq)
+	if patchRec.Code != http.StatusNotFound {
+		t.Fatalf("cross-user patch must be hidden: expected 404, got %d body=%s", patchRec.Code, patchRec.Body.String())
+	}
 }
 
 func TestCreateAppBookingPersistsMirror(t *testing.T) {
@@ -66,7 +187,7 @@ func TestCreateAppBookingPersistsMirror(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/bookings", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 
-	NewAppBookingsHandler(db, gateway).ServeHTTP(rec, req)
+	newAppBookingsHandler(db, gateway, false).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
@@ -135,7 +256,7 @@ func TestCreateAppBookingUsesIncomingRequestID(t *testing.T) {
 	req.Header.Set("X-Request-ID", "req-123")
 	rec := httptest.NewRecorder()
 
-	NewAppBookingsHandler(db, gateway).ServeHTTP(rec, req)
+	newAppBookingsHandler(db, gateway, false).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
@@ -180,7 +301,7 @@ func TestCreateAppBookingUsesBookingClinicIDForMerchantRequest(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/bookings", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 
-	NewAppBookingsHandler(db, gateway).ServeHTTP(rec, req)
+	newAppBookingsHandler(db, gateway, false).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
@@ -227,7 +348,7 @@ func TestCreateAppBookingFallsBackToMappedBookingClinicID(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/bookings", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 
-	NewAppBookingsHandler(db, gateway).ServeHTTP(rec, req)
+	newAppBookingsHandler(db, gateway, false).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
@@ -253,7 +374,7 @@ func TestCreateAppBookingPersistsProvidedClinicName(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/bookings", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 
-	NewAppBookingsHandler(db, gateway).ServeHTTP(rec, req)
+	newAppBookingsHandler(db, gateway, false).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
@@ -297,7 +418,7 @@ func TestListAppBookingsRefreshesMirrorStatus(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/bookings", nil)
 	req.Header.Set("X-Request-ID", "list-req-1")
 	rec := httptest.NewRecorder()
-	NewAppBookingsHandler(db, gateway).ServeHTTP(rec, req)
+	newAppBookingsHandler(db, gateway, false).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
@@ -369,7 +490,7 @@ func TestListAppBookingsSkipsRefreshWhenMirrorIsFresh(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/bookings", nil)
 	req.Header.Set("X-Request-ID", "list-req-fresh")
 	rec := httptest.NewRecorder()
-	NewAppBookingsHandler(db, gateway).ServeHTTP(rec, req)
+	newAppBookingsHandler(db, gateway, false).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
@@ -387,7 +508,7 @@ func TestListAppBookingsRejectsInvalidSyncStateFilter(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/bookings?sync_state=bad", nil)
 	rec := httptest.NewRecorder()
 
-	NewAppBookingsHandler(db, fakeGateway{}).ServeHTTP(rec, req)
+	newAppBookingsHandler(db, fakeGateway{}, false).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
@@ -436,7 +557,7 @@ func TestListAppBookingsCanFilterBySyncState(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/bookings?sync_state=stale", nil)
 	rec := httptest.NewRecorder()
-	NewAppBookingsHandler(db, gateway).ServeHTTP(rec, req)
+	newAppBookingsHandler(db, gateway, false).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
@@ -496,7 +617,7 @@ func TestListAppBookingsCanFilterByExternalBookingIDAndRequestID(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/bookings?external_booking_id=ext-filter-b&request_id=req-b", nil)
 	rec := httptest.NewRecorder()
-	NewAppBookingsHandler(db, fakeGateway{}).ServeHTTP(rec, req)
+	newAppBookingsHandler(db, fakeGateway{}, false).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
@@ -519,7 +640,7 @@ func TestListAppBookingsRejectsInvalidLastSyncSourceFilter(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/bookings?last_sync_source=bad", nil)
 	rec := httptest.NewRecorder()
 
-	NewAppBookingsHandler(db, fakeGateway{}).ServeHTTP(rec, req)
+	newAppBookingsHandler(db, fakeGateway{}, false).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
@@ -565,7 +686,7 @@ func TestListAppBookingsCanFilterByLastSyncSource(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/bookings?last_sync_source=merchant_sync", nil)
 	rec := httptest.NewRecorder()
-	NewAppBookingsHandler(db, fakeGateway{}).ServeHTTP(rec, req)
+	newAppBookingsHandler(db, fakeGateway{}, false).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
@@ -610,7 +731,7 @@ func TestListAppBookingsIncludesDebugOnlyWhenRequested(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/bookings", nil)
 	rec := httptest.NewRecorder()
-	NewAppBookingsHandler(db, fakeGateway{}).ServeHTTP(rec, req)
+	newAppBookingsHandler(db, fakeGateway{}, false).ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -626,7 +747,7 @@ func TestListAppBookingsIncludesDebugOnlyWhenRequested(t *testing.T) {
 
 	req = httptest.NewRequest(http.MethodGet, "/api/bookings?include_debug=true", nil)
 	rec = httptest.NewRecorder()
-	NewAppBookingsHandler(db, fakeGateway{}).ServeHTTP(rec, req)
+	newAppBookingsHandler(db, fakeGateway{}, false).ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -687,7 +808,7 @@ func TestListAppBookingsCanFilterByMerchantAnchors(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/bookings?booking_clinic_id=clinic_other_hk&merchant_internal_appointment_id=202", nil)
 	rec := httptest.NewRecorder()
-	NewAppBookingsHandler(db, fakeGateway{}).ServeHTTP(rec, req)
+	newAppBookingsHandler(db, fakeGateway{}, false).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
@@ -742,7 +863,7 @@ func TestListAppBookingsCanFilterByPetID(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/bookings?pet_id=pet-b", nil)
 	rec := httptest.NewRecorder()
-	NewAppBookingsHandler(db, fakeGateway{}).ServeHTTP(rec, req)
+	newAppBookingsHandler(db, fakeGateway{}, false).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
@@ -797,7 +918,7 @@ func TestListAppBookingsCanFilterByClinicID(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/bookings?clinic_id=clinic-b", nil)
 	rec := httptest.NewRecorder()
-	NewAppBookingsHandler(db, fakeGateway{}).ServeHTTP(rec, req)
+	newAppBookingsHandler(db, fakeGateway{}, false).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
@@ -819,7 +940,7 @@ func TestListAppBookingsRejectsInvalidSince(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/bookings?since=bad", nil)
 	rec := httptest.NewRecorder()
 
-	NewAppBookingsHandler(db, fakeGateway{}).ServeHTTP(rec, req)
+	newAppBookingsHandler(db, fakeGateway{}, false).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
@@ -866,7 +987,7 @@ func TestListAppBookingsCanFilterBySince(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/bookings?since="+url.QueryEscape(older.Add(5*time.Second).Format(time.RFC3339)), nil)
 	rec := httptest.NewRecorder()
-	NewAppBookingsHandler(db, fakeGateway{}).ServeHTTP(rec, req)
+	newAppBookingsHandler(db, fakeGateway{}, false).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
@@ -915,7 +1036,7 @@ func TestListAppBookingsForceRefreshOverridesFreshness(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/bookings?force_refresh=true", nil)
 	req.Header.Set("X-Request-ID", "list-force-1")
 	rec := httptest.NewRecorder()
-	NewAppBookingsHandler(db, gateway).ServeHTTP(rec, req)
+	newAppBookingsHandler(db, gateway, false).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
@@ -954,7 +1075,7 @@ func TestGetAppBookingReturnsRequestIDHeader(t *testing.T) {
 	req.SetPathValue("bookingID", "mirror-get-1")
 	req.Header.Set("X-Correlation-ID", "get-corr-1")
 	rec := httptest.NewRecorder()
-	NewAppBookingDetailHandler(db, gateway).ServeHTTP(rec, req)
+	newAppBookingDetailHandler(db, gateway, false).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
@@ -987,7 +1108,7 @@ func TestGetAppBookingRejectsInvalidSyncStateFilter(t *testing.T) {
 	req.SetPathValue("bookingID", "mirror-get-bad")
 	rec := httptest.NewRecorder()
 
-	NewAppBookingDetailHandler(db, fakeGateway{}).ServeHTTP(rec, req)
+	newAppBookingDetailHandler(db, fakeGateway{}, false).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
@@ -1018,7 +1139,7 @@ func TestGetAppBookingReturnsConflictWhenSyncStateDoesNotMatch(t *testing.T) {
 	req.SetPathValue("bookingID", "mirror-get-conflict")
 	rec := httptest.NewRecorder()
 
-	NewAppBookingDetailHandler(db, fakeGateway{}).ServeHTTP(rec, req)
+	newAppBookingDetailHandler(db, fakeGateway{}, false).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
@@ -1049,7 +1170,7 @@ func TestGetAppBookingAllowsMatchingSyncStateFilter(t *testing.T) {
 	req.SetPathValue("bookingID", "mirror-get-fresh")
 	rec := httptest.NewRecorder()
 
-	NewAppBookingDetailHandler(db, fakeGateway{}).ServeHTTP(rec, req)
+	newAppBookingDetailHandler(db, fakeGateway{}, false).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
@@ -1082,7 +1203,7 @@ func TestGetAppBookingReturnsConflictWhenAnchorDoesNotMatch(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/bookings/mirror-get-anchor?external_booking_id=wrong", nil)
 	req.SetPathValue("bookingID", "mirror-get-anchor")
 	rec := httptest.NewRecorder()
-	NewAppBookingDetailHandler(db, fakeGateway{}).ServeHTTP(rec, req)
+	newAppBookingDetailHandler(db, fakeGateway{}, false).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
@@ -1115,7 +1236,7 @@ func TestGetAppBookingAllowsMatchingAnchorFilters(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/bookings/mirror-get-anchor-ok?external_booking_id=ext-get-anchor-ok&request_id=req-anchor-ok&booking_clinic_id=clinic_happypaws_hk&merchant_internal_appointment_id=202", nil)
 	req.SetPathValue("bookingID", "mirror-get-anchor-ok")
 	rec := httptest.NewRecorder()
-	NewAppBookingDetailHandler(db, fakeGateway{}).ServeHTTP(rec, req)
+	newAppBookingDetailHandler(db, fakeGateway{}, false).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
@@ -1149,7 +1270,7 @@ func TestGetAppBookingIncludesDebugWhenRequested(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/bookings/mirror-get-debug?include_debug=true", nil)
 	req.SetPathValue("bookingID", "mirror-get-debug")
 	rec := httptest.NewRecorder()
-	NewAppBookingDetailHandler(db, fakeGateway{}).ServeHTTP(rec, req)
+	newAppBookingDetailHandler(db, fakeGateway{}, false).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
@@ -1197,7 +1318,7 @@ func TestGetAppBookingPassesRequestIDWhenRefreshOccurs(t *testing.T) {
 	req.SetPathValue("bookingID", "mirror-get-refresh-1")
 	req.Header.Set("X-Request-ID", "get-req-refresh-1")
 	rec := httptest.NewRecorder()
-	NewAppBookingDetailHandler(db, gateway).ServeHTTP(rec, req)
+	newAppBookingDetailHandler(db, gateway, false).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
@@ -1231,7 +1352,7 @@ func TestListAppBookingsMarksSyncErrorOnRefreshFailure(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/bookings", nil)
 	rec := httptest.NewRecorder()
-	NewAppBookingsHandler(db, gateway).ServeHTTP(rec, req)
+	newAppBookingsHandler(db, gateway, false).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
@@ -1429,7 +1550,7 @@ func TestPatchCancelledBookingPreservesOriginalNotes(t *testing.T) {
 	req.SetPathValue("bookingID", "mirror-cancel-1")
 	req.Header.Set("X-Request-ID", "cancel-req-1")
 	rec := httptest.NewRecorder()
-	NewAppBookingDetailHandler(db, gateway).ServeHTTP(rec, req)
+	newAppBookingDetailHandler(db, gateway, false).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
@@ -1499,7 +1620,7 @@ func TestPatchCancelledBookingMarksSyncErrorOnUpstreamFailure(t *testing.T) {
 	req.SetPathValue("bookingID", "mirror-cancel-error-1")
 	req.Header.Set("X-Correlation-ID", "corr-cancel-2")
 	rec := httptest.NewRecorder()
-	NewAppBookingDetailHandler(db, gateway).ServeHTTP(rec, req)
+	newAppBookingDetailHandler(db, gateway, false).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("expected 502, got %d: %s", rec.Code, rec.Body.String())

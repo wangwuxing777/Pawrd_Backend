@@ -172,16 +172,28 @@ func SetMirrorFreshnessWindow(window time.Duration) {
 }
 
 func NewAppBookingsHandler(db *gorm.DB, gateway VaccinationFacadeGateway) http.HandlerFunc {
+	return newAppBookingsHandler(db, gateway, true)
+}
+
+func newAppBookingsHandler(db *gorm.DB, gateway VaccinationFacadeGateway, requireAuth bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		EnableCors(&w)
 		if r.Method == http.MethodOptions {
 			return
 		}
+		userID := ""
+		if requireAuth {
+			var ok bool
+			userID, ok = authenticatedUserID(w, r)
+			if !ok {
+				return
+			}
+		}
 		switch r.Method {
 		case http.MethodGet:
-			handleListAppBookings(w, r, db, gateway)
+			handleListAppBookings(w, r, db, gateway, userID)
 		case http.MethodPost:
-			handleCreateAppBooking(w, r, db, gateway)
+			handleCreateAppBooking(w, r, db, gateway, userID)
 		default:
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
@@ -189,16 +201,28 @@ func NewAppBookingsHandler(db *gorm.DB, gateway VaccinationFacadeGateway) http.H
 }
 
 func NewAppBookingDetailHandler(db *gorm.DB, gateway VaccinationFacadeGateway) http.HandlerFunc {
+	return newAppBookingDetailHandler(db, gateway, true)
+}
+
+func newAppBookingDetailHandler(db *gorm.DB, gateway VaccinationFacadeGateway, requireAuth bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		EnableCors(&w)
 		if r.Method == http.MethodOptions {
 			return
 		}
+		userID := ""
+		if requireAuth {
+			var ok bool
+			userID, ok = authenticatedUserID(w, r)
+			if !ok {
+				return
+			}
+		}
 		switch r.Method {
 		case http.MethodGet:
-			handleGetAppBooking(w, r, db, gateway)
+			handleGetAppBooking(w, r, db, gateway, userID)
 		case http.MethodPatch:
-			handlePatchAppBooking(w, r, db, gateway)
+			handlePatchAppBooking(w, r, db, gateway, userID)
 		default:
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
@@ -468,7 +492,7 @@ func NewAppBookingReconcileHandler(db *gorm.DB, gateway VaccinationFacadeGateway
 	}
 }
 
-func handleCreateAppBooking(w http.ResponseWriter, r *http.Request, db *gorm.DB, gateway VaccinationFacadeGateway) {
+func handleCreateAppBooking(w http.ResponseWriter, r *http.Request, db *gorm.DB, gateway VaccinationFacadeGateway, userID string) {
 	var req appBookingRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
@@ -544,6 +568,7 @@ func handleCreateAppBooking(w http.ResponseWriter, r *http.Request, db *gorm.DB,
 	lastSyncedAt := time.Now().UTC()
 
 	mirror := models.AppBookingMirror{
+		UserID:            strings.TrimSpace(userID),
 		ExternalBookingID: merchantResp.Data.ExternalBookingID,
 		ClinicID:          req.ClinicID,
 		BookingClinicID:   merchantReq.ClinicIntegrationID,
@@ -591,9 +616,12 @@ func handleCreateAppBooking(w http.ResponseWriter, r *http.Request, db *gorm.DB,
 	})
 }
 
-func handleListAppBookings(w http.ResponseWriter, r *http.Request, db *gorm.DB, gateway VaccinationFacadeGateway) {
+func handleListAppBookings(w http.ResponseWriter, r *http.Request, db *gorm.DB, gateway VaccinationFacadeGateway, userID string) {
 	var mirrors []models.AppBookingMirror
 	query := db.Order("scheduled_date DESC")
+	if userID = strings.TrimSpace(userID); userID != "" {
+		query = query.Where("user_id = ?", userID)
+	}
 	if status := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("status"))); status != "" {
 		query = query.Where("status = ?", status)
 	}
@@ -674,7 +702,7 @@ func handleListAppBookings(w http.ResponseWriter, r *http.Request, db *gorm.DB, 
 	json.NewEncoder(w).Encode(appBookingListResponse{Bookings: bookings})
 }
 
-func handleGetAppBooking(w http.ResponseWriter, r *http.Request, db *gorm.DB, gateway VaccinationFacadeGateway) {
+func handleGetAppBooking(w http.ResponseWriter, r *http.Request, db *gorm.DB, gateway VaccinationFacadeGateway, userID string) {
 	bookingID := strings.TrimSpace(r.PathValue("bookingID"))
 	if bookingID == "" {
 		http.Error(w, "bookingID is required", http.StatusBadRequest)
@@ -682,7 +710,11 @@ func handleGetAppBooking(w http.ResponseWriter, r *http.Request, db *gorm.DB, ga
 	}
 
 	var mirror models.AppBookingMirror
-	if err := db.Where("id = ?", bookingID).First(&mirror).Error; err != nil {
+	query := db.Where("id = ?", bookingID)
+	if userID = strings.TrimSpace(userID); userID != "" {
+		query = query.Where("user_id = ?", userID)
+	}
+	if err := query.First(&mirror).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			http.Error(w, "Booking not found", http.StatusNotFound)
 			return
@@ -735,7 +767,7 @@ func handleGetAppBooking(w http.ResponseWriter, r *http.Request, db *gorm.DB, ga
 	})
 }
 
-func handlePatchAppBooking(w http.ResponseWriter, r *http.Request, db *gorm.DB, gateway VaccinationFacadeGateway) {
+func handlePatchAppBooking(w http.ResponseWriter, r *http.Request, db *gorm.DB, gateway VaccinationFacadeGateway, userID string) {
 	bookingID := strings.TrimSpace(r.PathValue("bookingID"))
 	if bookingID == "" {
 		http.Error(w, "bookingID is required", http.StatusBadRequest)
@@ -749,7 +781,11 @@ func handlePatchAppBooking(w http.ResponseWriter, r *http.Request, db *gorm.DB, 
 	}
 
 	var mirror models.AppBookingMirror
-	if err := db.Where("id = ?", bookingID).First(&mirror).Error; err != nil {
+	query := db.Where("id = ?", bookingID)
+	if userID = strings.TrimSpace(userID); userID != "" {
+		query = query.Where("user_id = ?", userID)
+	}
+	if err := query.First(&mirror).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			http.Error(w, "Booking not found", http.StatusNotFound)
 			return
