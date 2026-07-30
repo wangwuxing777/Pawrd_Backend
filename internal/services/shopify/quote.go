@@ -329,6 +329,25 @@ type quoteMutationPayload struct {
 	Warnings []rawQuoteWarning `json:"warnings"`
 }
 
+// CartUserError preserves Shopify's machine-readable cart validation metadata
+// so HTTP handlers can emit useful, PII-free diagnostics.
+type CartUserError struct {
+	Field   []string
+	Message string
+	Code    string
+}
+
+func (e *CartUserError) Error() string {
+	message := strings.TrimSpace(e.Message)
+	if message == "" {
+		message = strings.TrimSpace(e.Code)
+	}
+	if message == "" {
+		message = "cart validation failed"
+	}
+	return "Shopify cart: " + message
+}
+
 type rawQuoteWarning struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
@@ -400,7 +419,12 @@ type rawQuoteCart struct {
 
 func normalizeQuoteMutation(payload quoteMutationPayload, requestedDiscountCode string) (*StorefrontQuote, error) {
 	if len(payload.UserErrors) > 0 {
-		return nil, fmt.Errorf("Shopify cart: %s", strings.TrimSpace(payload.UserErrors[0].Message))
+		userError := payload.UserErrors[0]
+		return nil, &CartUserError{
+			Field:   append([]string(nil), userError.Field...),
+			Message: strings.TrimSpace(userError.Message),
+			Code:    strings.TrimSpace(userError.Code),
+		}
 	}
 	if err := rejectUnsafeQuoteWarnings(payload.Warnings); err != nil {
 		return nil, err
@@ -634,8 +658,15 @@ func requireQuoteCurrency(expected, actual string) error {
 
 func splitShippingName(name string) (string, string) {
 	parts := strings.Fields(strings.TrimSpace(name))
-	if len(parts) <= 1 {
-		return strings.TrimSpace(name), ""
+	if len(parts) == 0 {
+		return "", ""
+	}
+	if len(parts) == 1 {
+		// Shopify's strict delivery validation requires both fields. Pawrd's
+		// legacy contact model stores one display-name string, so preserve a
+		// single legal name in both fields until first/last names are modeled
+		// independently.
+		return parts[0], parts[0]
 	}
 	return strings.Join(parts[:len(parts)-1], " "), parts[len(parts)-1]
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -86,6 +87,8 @@ func newShopQuoteHandler(
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		requestID := resolveRequestID(r)
+		w.Header().Set("X-Request-ID", requestID)
 		claims, ok := authenticatedShopClaims(w, r)
 		if !ok {
 			return
@@ -144,7 +147,7 @@ func newShopQuoteHandler(
 			)
 		}
 		if err != nil {
-			writeShopQuoteError(w, err)
+			writeShopQuoteError(w, requestID, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, response)
@@ -154,20 +157,71 @@ func newShopQuoteHandler(
 type shopQuoteError struct {
 	Status  int
 	Message string
+	Cause   error
 }
 
 func (e *shopQuoteError) Error() string { return e.Message }
+func (e *shopQuoteError) Unwrap() error { return e.Cause }
 
 func quoteError(status int, message string) error {
 	return &shopQuoteError{Status: status, Message: message}
 }
 
-func writeShopQuoteError(w http.ResponseWriter, err error) {
-	if typed, ok := err.(*shopQuoteError); ok {
-		http.Error(w, typed.Message, typed.Status)
-		return
+func quoteErrorWithCause(status int, err error) error {
+	return &shopQuoteError{Status: status, Message: err.Error(), Cause: err}
+}
+
+func writeShopQuoteError(w http.ResponseWriter, requestID string, err error) {
+	status := http.StatusBadGateway
+	message := "Unable to create Shopify quote"
+	category := "unexpected_quote_failure"
+	shopifyCode := ""
+	shopifyField := ""
+
+	var typed *shopQuoteError
+	if errors.As(err, &typed) {
+		status = typed.Status
+		message = typed.Message
+		category = shopQuoteErrorCategory(typed)
 	}
-	http.Error(w, "Unable to create Shopify quote", http.StatusBadGateway)
+	var cartError *shopify.CartUserError
+	if errors.As(err, &cartError) {
+		category = "shopify_cart_validation"
+		shopifyCode = strings.TrimSpace(cartError.Code)
+		shopifyField = strings.Join(cartError.Field, ".")
+	}
+	log.Printf(
+		"shop quote failed request_id=%q status=%d category=%q shopify_code=%q shopify_field=%q",
+		requestID,
+		status,
+		category,
+		shopifyCode,
+		shopifyField,
+	)
+	http.Error(w, message, status)
+}
+
+func shopQuoteErrorCategory(err *shopQuoteError) string {
+	message := strings.ToLower(strings.TrimSpace(err.Message))
+	switch {
+	case strings.Contains(message, "delivery option"):
+		return "shopify_delivery_unavailable"
+	case strings.Contains(message, "adjusted the requested merchandise"),
+		strings.Contains(message, "cart changed"):
+		return "shopify_cart_changed"
+	case strings.Contains(message, "hicustom"):
+		return "hicustom_checkout_disabled"
+	case err.Status >= http.StatusInternalServerError:
+		return "quote_service_failure"
+	case err.Status == http.StatusUnprocessableEntity:
+		return "quote_validation"
+	case err.Status == http.StatusConflict:
+		return "quote_conflict"
+	case err.Status == http.StatusGone:
+		return "quote_expired"
+	default:
+		return "quote_request_rejected"
+	}
 }
 
 func createShopQuote(
@@ -232,7 +286,7 @@ func createShopQuote(
 		},
 	})
 	if err != nil {
-		return ShopQuoteResponse{}, quoteError(http.StatusUnprocessableEntity, err.Error())
+		return ShopQuoteResponse{}, quoteErrorWithCause(http.StatusUnprocessableEntity, err)
 	}
 	if !sameRequestedQuoteLines(lines, storefrontQuote.Lines) {
 		return ShopQuoteResponse{}, quoteError(
@@ -343,7 +397,7 @@ func selectShopQuoteDelivery(
 		DeliveryOptionHandle: selected.Handle,
 	}, shopBuyerIP(r))
 	if err != nil {
-		return ShopQuoteResponse{}, quoteError(http.StatusUnprocessableEntity, err.Error())
+		return ShopQuoteResponse{}, quoteErrorWithCause(http.StatusUnprocessableEntity, err)
 	}
 	if updated.CartID != record.ShopifyCartID || !sameQuotedItems(previous.LineItems, updated.Lines) {
 		return ShopQuoteResponse{}, quoteError(http.StatusConflict, "Shopify cart changed; request a new quote")

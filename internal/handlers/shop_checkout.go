@@ -637,28 +637,3 @@ func validateHongKongPhone(rawPhone string) error {
 	_, err := normalizeHongKongPhone(rawPhone)
 	return err
 }
-
-// normalizeHongKongPhone is the ONE place a Hong Kong delivery phone is
-// canonicalized: spaces/dashes/parens stripped, optional +852/852 prefix
-// tolerated, exactly 8 digits leading 2-9 required, canonical +852XXXXXXXX
-// produced. Callers use the returned value for every downstream write
-// (Shopify request, sealed quote snapshot, persisted order).
-func normalizeHongKongPhone(raw string) (string, error) {
-	phone := strings.NewReplacer(" ", "", "-", "", "(", "", ")", "").Replace(strings.TrimSpace(raw))
-	phone = strings.TrimPrefix(phone, "+852")
-	if strings.HasPrefix(phone, "852") && len(phone) == 11 {
-		phone = phone[3:]
-	}
-	if len(phone) != 8 {
-		return "", fmt.Errorf("Hong Kong phone number must contain 8 digits")
-	}
-	for _, char := range phone {
-		if char < '0' || char > '9' {
-			return "", fmt.Errorf("Hong Kong phone number must contain 8 digits")
-		}
-	}
-	if phone[0] < '2' || phone[0] > '9' {
-		return "", fmt.Errorf("Hong Kong phone number must start with 2-9")
-	}
-	return "+852" + phone, nil
-}

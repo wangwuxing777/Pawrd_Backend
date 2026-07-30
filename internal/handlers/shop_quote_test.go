@@ -27,6 +27,8 @@ type fakeStorefrontQuoteClient struct {
 	selectRequest  shopify.StorefrontDeliverySelection
 	initial        *shopify.StorefrontQuote
 	selected       *shopify.StorefrontQuote
+	createErr      error
+	selectErr      error
 	createCalls    int
 	selectionCalls int
 	onSelect       func()
@@ -38,7 +40,7 @@ func (f *fakeStorefrontQuoteClient) CreateCartQuote(
 ) (*shopify.StorefrontQuote, error) {
 	f.createCalls++
 	f.createRequest = req
-	return f.initial, nil
+	return f.initial, f.createErr
 }
 
 func (f *fakeStorefrontQuoteClient) SelectCartDelivery(
@@ -53,7 +55,7 @@ func (f *fakeStorefrontQuoteClient) SelectCartDelivery(
 	if f.onSelect != nil {
 		f.onSelect()
 	}
-	return f.selected, nil
+	return f.selected, f.selectErr
 }
 
 type fakeCheckoutPayments struct {
@@ -171,6 +173,51 @@ func TestShopQuoteHandlerCreatesThenSelectsAuthoritativeDelivery(t *testing.T) {
 	}
 	if client.selectionCalls != 1 {
 		t.Fatalf("stale version reached Shopify; selection calls=%d", client.selectionCalls)
+	}
+}
+
+func TestShopQuoteHandlerReturnsReferenceIDForShopifyCartValidation(t *testing.T) {
+	db := newShopFlowTestDB(t, true)
+	token, _, cfg := shopFlowAuth(t, db, "quote-error@example.com")
+	client := &fakeStorefrontQuoteClient{
+		createErr: &shopify.CartUserError{
+			Field: []string{
+				"input", "delivery", "addresses", "0",
+				"address", "deliveryAddress", "lastName",
+			},
+			Message: "A last name is required in order to continue.",
+			Code:    "INVALID",
+		},
+	}
+	handler := newShopQuoteHandler(
+		cfg,
+		db,
+		func(*config.Config) (shopify.StorefrontQuoteClient, error) {
+			return client, nil
+		},
+		time.Now,
+		fixedShopAccountEmail("quote-error@example.com"),
+	)
+
+	recorder := performShopFlowRequest(t, handler, token, ShopQuoteRequest{
+		LineItems: []ShopCheckoutLineItemRequest{{
+			Source: "shopify", VariantID: "gid://shopify/ProductVariant/1", Quantity: 1,
+		}},
+		Shipping: ShopCheckoutShippingRequest{
+			RecipientName: "Jasper", Phone: "61234567",
+			Address1: "1 Test Street", District: "Wan Chai",
+			Region: "Hong Kong Island",
+		},
+	})
+
+	if recorder.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "last name is required") {
+		t.Fatalf("missing Shopify validation body: %q", recorder.Body.String())
+	}
+	if strings.TrimSpace(recorder.Header().Get("X-Request-ID")) == "" {
+		t.Fatal("expected X-Request-ID on quote failure")
 	}
 }
 

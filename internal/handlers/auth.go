@@ -513,26 +513,10 @@ func NewAuthMePhoneUpdateHandler() http.HandlerFunc {
 }
 
 // normalizeHKPhone normalizes a Hong Kong mobile number to +852XXXXXXXX.
-// Accepts 8 digits starting with 5/6/9, optionally prefixed with 852 or +852.
+// Accepts current 4-9 mobile prefixes, optionally prefixed with 852 or +852.
 func normalizeHKPhone(phone string) (string, bool) {
-	var digits strings.Builder
-	for _, r := range phone {
-		if r >= '0' && r <= '9' {
-			digits.WriteRune(r)
-		}
-	}
-	d := digits.String()
-	if strings.HasPrefix(d, "852") && len(d) == 11 {
-		d = d[3:]
-	}
-	if len(d) != 8 {
-		return "", false
-	}
-	switch d[0] {
-	case '5', '6', '9':
-		return "+852" + d, true
-	}
-	return "", false
+	normalized, err := normalizeHongKongMobilePhone(phone)
+	return normalized, err == nil
 }
 
 // ── Family helpers ─────────────────────────────────────────────────────────

@@ -3,6 +3,7 @@ package shopify
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -99,6 +100,9 @@ func TestStorefrontQuoteCreatesCartAndSelectsAuthoritativeDelivery(t *testing.T)
 	if !ok || deliveryAddress["countryCode"] != "HK" || deliveryAddress["provinceCode"] != "HK" {
 		t.Fatalf("missing Hong Kong country/province codes: %#v", addressWrapper["deliveryAddress"])
 	}
+	if deliveryAddress["firstName"] != "Alice" || deliveryAddress["lastName"] != "Test" {
+		t.Fatalf("unexpected split delivery name: %#v", deliveryAddress)
+	}
 
 	finalQuote, err := client.SelectCartDelivery(
 		context.Background(),
@@ -120,6 +124,63 @@ func TestStorefrontQuoteCreatesCartAndSelectsAuthoritativeDelivery(t *testing.T)
 	}
 	if selectedVariables["cartId"] != "gid://shopify/Cart/cart-1" {
 		t.Fatalf("unexpected selected cart ID: %#v", selectedVariables)
+	}
+}
+
+func TestSplitShippingNameSupportsSingleAndMultiPartNames(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		firstName string
+		lastName  string
+	}{
+		{name: "empty", input: "  ", firstName: "", lastName: ""},
+		{name: "single", input: "Jasper", firstName: "Jasper", lastName: "Jasper"},
+		{name: "two parts", input: "Jasper Wang", firstName: "Jasper", lastName: "Wang"},
+		{name: "multiple parts", input: "Chan Tai Man", firstName: "Chan Tai", lastName: "Man"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			firstName, lastName := splitShippingName(test.input)
+			if firstName != test.firstName || lastName != test.lastName {
+				t.Fatalf(
+					"splitShippingName(%q)=(%q,%q), want (%q,%q)",
+					test.input,
+					firstName,
+					lastName,
+					test.firstName,
+					test.lastName,
+				)
+			}
+		})
+	}
+}
+
+func TestNormalizeQuoteMutationPreservesCartUserErrorMetadata(t *testing.T) {
+	var payload quoteMutationPayload
+	if err := json.Unmarshal([]byte(`{
+		"userErrors":[{
+			"field":["input","delivery","addresses","0","address","deliveryAddress","lastName"],
+			"message":"A last name is required in order to continue.",
+			"code":"INVALID"
+		}]
+	}`), &payload); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := normalizeQuoteMutation(payload, "")
+	var cartError *CartUserError
+	if !errors.As(err, &cartError) {
+		t.Fatalf("expected CartUserError, got %T %v", err, err)
+	}
+	if cartError.Code != "INVALID" ||
+		cartError.Message != "A last name is required in order to continue." ||
+		strings.Join(cartError.Field, ".") !=
+			"input.delivery.addresses.0.address.deliveryAddress.lastName" {
+		t.Fatalf("unexpected cart error metadata: %+v", cartError)
+	}
+	if err.Error() != "Shopify cart: A last name is required in order to continue." {
+		t.Fatalf("unexpected user-facing cart error: %q", err.Error())
 	}
 }
 

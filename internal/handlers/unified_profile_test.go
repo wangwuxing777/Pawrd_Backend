@@ -517,7 +517,7 @@ func TestAuthMePhoneUpdateHandler(t *testing.T) {
 	db := setupUnifiedProfileTestDB(t)
 	userID, token := seedUnifiedUser(t, db, "phone@example.com", "Phone User")
 
-	rec, req := authedRequest(t, http.MethodPatch, "/api/auth/me/phone", token, map[string]any{"phone": "9123 4567"})
+	rec, req := authedRequest(t, http.MethodPatch, "/api/auth/me/phone", token, map[string]any{"phone": "8495 8927"})
 	NewAuthMePhoneUpdateHandler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
@@ -534,15 +534,15 @@ func TestAuthMePhoneUpdateHandler(t *testing.T) {
 	if payload.ID != userID {
 		t.Fatalf("expected id %s, got %s", userID, payload.ID)
 	}
-	if payload.Phone == nil || *payload.Phone != "+85291234567" {
-		t.Fatalf("expected normalized phone +85291234567, got %v", payload.Phone)
+	if payload.Phone == nil || *payload.Phone != "+85284958927" {
+		t.Fatalf("expected normalized phone +85284958927, got %v", payload.Phone)
 	}
 
 	var stored models.AuthUser
 	if err := db.First(&stored, "id = ?", userID).Error; err != nil {
 		t.Fatalf("reload user: %v", err)
 	}
-	if stored.Phone != "+85291234567" {
+	if stored.Phone != "+85284958927" {
 		t.Fatalf("expected persisted normalized phone, got %s", stored.Phone)
 	}
 
@@ -603,7 +603,16 @@ func TestAuthMePhoneUpdateHandlerRejectsInvalid(t *testing.T) {
 	db := setupUnifiedProfileTestDB(t)
 	_, token := seedUnifiedUser(t, db, "bad-phone@example.com", "Bad Phone")
 
-	for _, phone := range []string{"12345678", "1234567", "912345678", "+1 415 555 0132", ""} {
+	for _, phone := range []string{
+		"12345678",
+		"21234567",
+		"31234567",
+		"1234567",
+		"912345678",
+		"+1 415 555 0132",
+		"abc84958927",
+		"",
+	} {
 		rec, req := authedRequest(t, http.MethodPatch, "/api/auth/me/phone", token, map[string]any{"phone": phone})
 		NewAuthMePhoneUpdateHandler().ServeHTTP(rec, req)
 		if rec.Code != http.StatusBadRequest {
