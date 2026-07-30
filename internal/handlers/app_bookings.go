@@ -165,6 +165,8 @@ var clinicNameCache = struct {
 
 var mirrorFreshnessWindow = 2 * time.Minute
 
+const demoBookingExternalIDPrefix = "demo-"
+
 func SetMirrorFreshnessWindow(window time.Duration) {
 	if window > 0 {
 		mirrorFreshnessWindow = window
@@ -548,6 +550,18 @@ func handleCreateAppBooking(w http.ResponseWriter, r *http.Request, db *gorm.DB,
 	})
 	if err != nil {
 		if errors.Is(err, merchant.ErrNotConfigured) {
+			if bookingDemoFallbackEnabled() {
+				persistDemoAppBooking(
+					w,
+					db,
+					req,
+					merchantReq,
+					userID,
+					requestID,
+					idempotencyKey,
+				)
+				return
+			}
 			http.Error(w, "Merchant vaccination gateway is not configured", http.StatusServiceUnavailable)
 			return
 		}
@@ -655,6 +669,8 @@ func handleListAppBookings(w http.ResponseWriter, r *http.Request, db *gorm.DB, 
 	if lastSyncSourceFilter != "" {
 		valid := map[string]bool{
 			"create_accept":     true,
+			"demo_fallback":     true,
+			"demo_cancel":       true,
 			"read_refresh":      true,
 			"cancel_accept":     true,
 			"merchant_sync":     true,
@@ -801,54 +817,61 @@ func handlePatchAppBooking(w http.ResponseWriter, r *http.Request, db *gorm.DB, 
 	}
 
 	if desiredStatus == "cancelled" {
-		lastSyncAttemptAt := time.Now().UTC()
 		requestID := resolveRequestID(r)
-		mirror.LastSyncAttemptAt = &lastSyncAttemptAt
 		mirror.RequestID = requestID
-		payload, _ := json.Marshal(map[string]string{"reason": strings.TrimSpace(req.Notes)})
-		statusCode, _, responseBody, err := gateway.Send(r.Context(), http.MethodPost, "/app/v1/vaccinations/bookings/"+url.PathEscape(mirror.ExternalBookingID)+"/cancel", nil, payload, map[string]string{
-			"Content-Type": "application/json",
-			"X-Request-ID": requestID,
-		})
-		if err != nil {
-			mirror.LastSyncError = "gateway_error"
-			_ = db.Save(&mirror).Error
-			if errors.Is(err, merchant.ErrNotConfigured) {
-				http.Error(w, "Merchant vaccination gateway is not configured", http.StatusServiceUnavailable)
+		if isDemoBookingMirror(mirror) {
+			mirror.Status = "cancelled"
+			mirror.MerchantStatus = "not_submitted"
+			mirror.LastSyncError = ""
+			mirror.LastSyncSource = "demo_cancel"
+		} else {
+			lastSyncAttemptAt := time.Now().UTC()
+			mirror.LastSyncAttemptAt = &lastSyncAttemptAt
+			payload, _ := json.Marshal(map[string]string{"reason": strings.TrimSpace(req.Notes)})
+			statusCode, _, responseBody, err := gateway.Send(r.Context(), http.MethodPost, "/app/v1/vaccinations/bookings/"+url.PathEscape(mirror.ExternalBookingID)+"/cancel", nil, payload, map[string]string{
+				"Content-Type": "application/json",
+				"X-Request-ID": requestID,
+			})
+			if err != nil {
+				mirror.LastSyncError = "gateway_error"
+				_ = db.Save(&mirror).Error
+				if errors.Is(err, merchant.ErrNotConfigured) {
+					http.Error(w, "Merchant vaccination gateway is not configured", http.StatusServiceUnavailable)
+					return
+				}
+				http.Error(w, "Failed to contact merchant vaccination gateway", http.StatusBadGateway)
 				return
 			}
-			http.Error(w, "Failed to contact merchant vaccination gateway", http.StatusBadGateway)
-			return
-		}
-		if statusCode < 200 || statusCode > 299 {
-			mirror.LastSyncError = "upstream_status_" + http.StatusText(statusCode)
-			_ = db.Save(&mirror).Error
-			writeRawJSONOrFallback(w, statusCode, responseBody)
-			return
-		}
-		lastSyncedAt := time.Now().UTC()
-		mirror.LastSyncedAt = &lastSyncedAt
-		mirror.LastSyncError = ""
-		mirror.LastSyncSource = "cancel_accept"
+			if statusCode < 200 || statusCode > 299 {
+				mirror.LastSyncError = "upstream_status_" + http.StatusText(statusCode)
+				_ = db.Save(&mirror).Error
+				writeRawJSONOrFallback(w, statusCode, responseBody)
+				return
+			}
+			lastSyncedAt := time.Now().UTC()
+			mirror.LastSyncedAt = &lastSyncedAt
+			mirror.LastSyncError = ""
+			mirror.LastSyncSource = "cancel_accept"
 
-		var merchantResp merchantBookingEnvelope
-		if err := json.Unmarshal(responseBody, &merchantResp); err == nil {
-			if nextStatus := mapMerchantStatusToAppStatus(merchantResp.Data.Status); nextStatus != "" {
-				mirror.Status = nextStatus
+			var merchantResp merchantBookingEnvelope
+			if err := json.Unmarshal(responseBody, &merchantResp); err == nil {
+				if nextStatus := mapMerchantStatusToAppStatus(merchantResp.Data.Status); nextStatus != "" {
+					mirror.Status = nextStatus
+				} else {
+					mirror.Status = "cancelled"
+				}
+				if merchantResp.Data.MerchantStatus.AppointmentStatus != "" {
+					mirror.MerchantStatus = merchantResp.Data.MerchantStatus.AppointmentStatus
+				} else {
+					mirror.MerchantStatus = "cancelled"
+				}
+				if merchantUpdatedAt := parseMerchantTimestamp(merchantResp.Data.UpdatedAt); merchantUpdatedAt != nil {
+					mirror.MerchantUpdatedAt = merchantUpdatedAt
+				}
 			} else {
 				mirror.Status = "cancelled"
-			}
-			if merchantResp.Data.MerchantStatus.AppointmentStatus != "" {
-				mirror.MerchantStatus = merchantResp.Data.MerchantStatus.AppointmentStatus
-			} else {
 				mirror.MerchantStatus = "cancelled"
 			}
-			if merchantUpdatedAt := parseMerchantTimestamp(merchantResp.Data.UpdatedAt); merchantUpdatedAt != nil {
-				mirror.MerchantUpdatedAt = merchantUpdatedAt
-			}
-		} else {
-			mirror.Status = "cancelled"
-			mirror.MerchantStatus = "cancelled"
 		}
 	}
 
@@ -1034,6 +1057,9 @@ func deriveMirrorSyncState(mirror models.AppBookingMirror, now time.Time) (strin
 }
 
 func shouldRefreshMirror(mirror models.AppBookingMirror, forceRefresh bool) bool {
+	if isDemoBookingMirror(mirror) {
+		return false
+	}
 	if forceRefresh {
 		return true
 	}
@@ -1043,6 +1069,66 @@ func shouldRefreshMirror(mirror models.AppBookingMirror, forceRefresh bool) bool
 
 func requestForcesRefresh(r *http.Request) bool {
 	return strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("force_refresh")), "true")
+}
+
+func bookingDemoFallbackEnabled() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("BOOKING_DEMO_FALLBACK_ENABLED")), "true")
+}
+
+func isDemoBookingMirror(mirror models.AppBookingMirror) bool {
+	return strings.HasPrefix(strings.TrimSpace(mirror.ExternalBookingID), demoBookingExternalIDPrefix)
+}
+
+func persistDemoAppBooking(
+	w http.ResponseWriter,
+	db *gorm.DB,
+	req appBookingRequest,
+	merchantReq merchantCreateBookingRequest,
+	userID string,
+	requestID string,
+	idempotencyKey string,
+) {
+	now := time.Now().UTC()
+	mirror := models.AppBookingMirror{
+		UserID:            strings.TrimSpace(userID),
+		ExternalBookingID: demoBookingExternalIDPrefix + uuid.NewString(),
+		ClinicID:          req.ClinicID,
+		BookingClinicID:   merchantReq.ClinicIntegrationID,
+		ClinicName:        resolveClinicName(req),
+		ServiceType:       req.ServiceType,
+		ScheduledDate:     req.ScheduledDate.UTC(),
+		Status:            "demo_pending",
+		MerchantStatus:    "not_submitted",
+		LastSyncAttemptAt: &now,
+		LastSyncError:     "merchant_not_configured_demo_fallback",
+		LastSyncSource:    "demo_fallback",
+		RequestID:         requestID,
+		IdempotencyKey:    idempotencyKey,
+		Notes:             req.Notes,
+		PetID:             req.PetID,
+		PetName:           merchantReq.Pet.Name,
+	}
+	if err := db.Create(&mirror).Error; err != nil {
+		http.Error(w, "Failed to persist demo booking", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-ID", requestID)
+	w.Header().Set("X-Pawrd-Booking-Mode", "demo")
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(appBookingCreateEnvelope{
+		Success: true,
+		Data: struct {
+			ID      string `json:"id"`
+			Status  string `json:"status"`
+			Message string `json:"message,omitempty"`
+		}{
+			ID:      mirror.ID,
+			Status:  mirror.Status,
+			Message: "Demo request saved locally; the clinic has not received this booking.",
+		},
+	})
 }
 
 func parseOwnerDetails(notes string) (name, email, phone string) {

@@ -13,6 +13,7 @@ import (
 
 	"github.com/wangwuxing777/Pawrd_Backend/internal/auth"
 	"github.com/wangwuxing777/Pawrd_Backend/internal/models"
+	"github.com/wangwuxing777/Pawrd_Backend/internal/services/merchant"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -155,6 +156,123 @@ func TestAuthenticatedBookingsPersistAndEnforceUserOwnership(t *testing.T) {
 	NewAppBookingDetailHandler(db, fakeGateway{}).ServeHTTP(patchRec, patchReq)
 	if patchRec.Code != http.StatusNotFound {
 		t.Fatalf("cross-user patch must be hidden: expected 404, got %d body=%s", patchRec.Code, patchRec.Body.String())
+	}
+}
+
+func TestCreateAppBookingDemoFallbackIsDisabledByDefault(t *testing.T) {
+	t.Setenv("BOOKING_DEMO_FALLBACK_ENABLED", "")
+	db := newTestDB(t)
+	gateway := fakeGateway{send: func(context.Context, string, string, url.Values, []byte, map[string]string) (int, string, []byte, error) {
+		return 0, "", nil, merchant.ErrNotConfigured
+	}}
+
+	rec := httptest.NewRecorder()
+	NewAppBookingsHandler(db, gateway).ServeHTTP(
+		rec,
+		bookingCreateRequest(t, bookingTestToken(t, "demo-user")),
+	)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 with fallback disabled, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var count int64
+	if err := db.Model(&models.AppBookingMirror{}).Count(&count).Error; err != nil {
+		t.Fatalf("count mirrors: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("fallback disabled must not persist a mirror, got %d", count)
+	}
+}
+
+func TestCreateAppBookingDemoFallbackPersistsListsAndCancelsLocally(t *testing.T) {
+	t.Setenv("BOOKING_DEMO_FALLBACK_ENABLED", "true")
+	db := newTestDB(t)
+	createCalls := 0
+	createGateway := fakeGateway{send: func(context.Context, string, string, url.Values, []byte, map[string]string) (int, string, []byte, error) {
+		createCalls++
+		return 0, "", nil, merchant.ErrNotConfigured
+	}}
+	token := bookingTestToken(t, "demo-user")
+
+	createRec := httptest.NewRecorder()
+	NewAppBookingsHandler(db, createGateway).ServeHTTP(
+		createRec,
+		bookingCreateRequest(t, token),
+	)
+	if createRec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 demo fallback, got %d body=%s", createRec.Code, createRec.Body.String())
+	}
+	if createRec.Header().Get("X-Pawrd-Booking-Mode") != "demo" {
+		t.Fatalf("expected demo response header, got %q", createRec.Header().Get("X-Pawrd-Booking-Mode"))
+	}
+	var createEnvelope appBookingCreateEnvelope
+	if err := json.Unmarshal(createRec.Body.Bytes(), &createEnvelope); err != nil {
+		t.Fatalf("decode demo create response: %v", err)
+	}
+	if !createEnvelope.Success || createEnvelope.Data.Status != "demo_pending" {
+		t.Fatalf("expected explicit demo_pending response, got %+v", createEnvelope)
+	}
+	if createCalls != 1 {
+		t.Fatalf("expected one Merchant attempt, got %d", createCalls)
+	}
+
+	var mirror models.AppBookingMirror
+	if err := db.First(&mirror).Error; err != nil {
+		t.Fatalf("load demo mirror: %v", err)
+	}
+	if mirror.UserID != "demo-user" {
+		t.Fatalf("expected demo-user owner, got %q", mirror.UserID)
+	}
+	if !isDemoBookingMirror(mirror) || mirror.Status != "demo_pending" {
+		t.Fatalf("expected explicit demo mirror, got %+v", mirror)
+	}
+	if mirror.MerchantStatus != "not_submitted" || mirror.LastSyncSource != "demo_fallback" {
+		t.Fatalf("expected not-submitted demo metadata, got %+v", mirror)
+	}
+
+	unexpectedGatewayCalls := 0
+	noMerchantGateway := fakeGateway{send: func(context.Context, string, string, url.Values, []byte, map[string]string) (int, string, []byte, error) {
+		unexpectedGatewayCalls++
+		return 0, "", nil, merchant.ErrNotConfigured
+	}}
+	listReq := httptest.NewRequest(http.MethodGet, "/api/bookings", nil)
+	listReq.Header.Set("Authorization", "Bearer "+token)
+	listRec := httptest.NewRecorder()
+	NewAppBookingsHandler(db, noMerchantGateway).ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list demo mirror: expected 200, got %d body=%s", listRec.Code, listRec.Body.String())
+	}
+	var list appBookingListResponse
+	if err := json.Unmarshal(listRec.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decode demo list: %v", err)
+	}
+	if len(list.Bookings) != 1 || list.Bookings[0].Status != "demo_pending" {
+		t.Fatalf("expected demo booking in owned list, got %+v", list.Bookings)
+	}
+	if unexpectedGatewayCalls != 0 {
+		t.Fatalf("listing a demo mirror must not contact Merchant, got %d calls", unexpectedGatewayCalls)
+	}
+
+	patchReq := httptest.NewRequest(
+		http.MethodPatch,
+		"/api/bookings/"+mirror.ID,
+		bytes.NewBufferString(`{"status":"cancelled"}`),
+	)
+	patchReq.SetPathValue("bookingID", mirror.ID)
+	patchReq.Header.Set("Authorization", "Bearer "+token)
+	patchRec := httptest.NewRecorder()
+	NewAppBookingDetailHandler(db, noMerchantGateway).ServeHTTP(patchRec, patchReq)
+	if patchRec.Code != http.StatusOK {
+		t.Fatalf("cancel demo mirror: expected 200, got %d body=%s", patchRec.Code, patchRec.Body.String())
+	}
+	if unexpectedGatewayCalls != 0 {
+		t.Fatalf("cancelling a demo mirror must not contact Merchant, got %d calls", unexpectedGatewayCalls)
+	}
+	if err := db.First(&mirror, "id = ?", mirror.ID).Error; err != nil {
+		t.Fatalf("reload cancelled demo mirror: %v", err)
+	}
+	if mirror.Status != "cancelled" || mirror.LastSyncSource != "demo_cancel" {
+		t.Fatalf("expected locally cancelled demo mirror, got %+v", mirror)
 	}
 }
 
@@ -1504,6 +1622,10 @@ func TestShouldRefreshMirror(t *testing.T) {
 	neverSynced := models.AppBookingMirror{}
 	if !shouldRefreshMirror(neverSynced, false) {
 		t.Fatal("expected never synced mirror to refresh")
+	}
+	demo := models.AppBookingMirror{ExternalBookingID: demoBookingExternalIDPrefix + "booking"}
+	if shouldRefreshMirror(demo, false) || shouldRefreshMirror(demo, true) {
+		t.Fatal("demo mirrors must never be refreshed from Merchant")
 	}
 }
 
