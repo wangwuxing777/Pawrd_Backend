@@ -413,8 +413,10 @@ func (c *AdminClient) CreateOrder(ctx context.Context, input AdminOrderInput) (*
 		}
 		lines = append(lines, payload)
 	}
+	firstName, lastName := splitShippingName(input.ShippingName)
 	address := map[string]any{
-		"firstName":    strings.TrimSpace(input.ShippingName),
+		"firstName":    firstName,
+		"lastName":     lastName,
 		"phone":        strings.TrimSpace(input.ShippingPhone),
 		"address1":     strings.TrimSpace(input.ShippingAddress),
 		"city":         strings.TrimSpace(input.ShippingCity),
@@ -439,7 +441,8 @@ func (c *AdminClient) CreateOrder(ctx context.Context, input AdminOrderInput) (*
 	if customerEmail := strings.TrimSpace(input.CustomerEmail); customerEmail != "" {
 		customer := map[string]any{
 			"email":     customerEmail,
-			"firstName": strings.TrimSpace(input.ShippingName),
+			"firstName": firstName,
+			"lastName":  lastName,
 		}
 		order["customer"] = map[string]any{"toUpsert": customer}
 	}
@@ -615,8 +618,10 @@ func adminShippingAddressInput(input AdminOrderInput) AdminShippingAddressInput 
 }
 
 func adminShippingAddressPayload(input AdminShippingAddressInput) map[string]any {
+	firstName, lastName := splitShippingName(input.Name)
 	return map[string]any{
-		"firstName":    strings.TrimSpace(input.Name),
+		"firstName":    firstName,
+		"lastName":     lastName,
 		"phone":        strings.TrimSpace(input.Phone),
 		"address1":     strings.TrimSpace(input.Address),
 		"city":         strings.TrimSpace(input.City),
@@ -629,7 +634,9 @@ func adminShippingAddressMatches(actual *adminMailingAddress, expected AdminShip
 	if actual == nil {
 		return false
 	}
-	return strings.TrimSpace(actual.FirstName+" "+actual.LastName) != "" &&
+	expectedFirstName, expectedLastName := splitShippingName(expected.Name)
+	return strings.EqualFold(strings.TrimSpace(actual.FirstName), expectedFirstName) &&
+		strings.EqualFold(strings.TrimSpace(actual.LastName), expectedLastName) &&
 		strings.TrimSpace(actual.Phone) != "" &&
 		strings.EqualFold(strings.TrimSpace(actual.Address1), strings.TrimSpace(expected.Address)) &&
 		strings.EqualFold(strings.TrimSpace(actual.City), strings.TrimSpace(expected.City)) &&

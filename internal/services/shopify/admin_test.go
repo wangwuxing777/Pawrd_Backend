@@ -29,6 +29,29 @@ func newTestAdminClient(server *httptest.Server, provider *adminTokenProvider) *
 	}
 }
 
+func TestSplitShippingName(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		wantFirst string
+		wantLast  string
+	}{
+		{name: "full name", input: "Alice Test", wantFirst: "Alice", wantLast: "Test"},
+		{name: "single segment", input: "Alice", wantFirst: "Alice", wantLast: "Alice"},
+		{name: "multiple spaces", input: "  Alice  Mary  Jane  ", wantFirst: "Alice Mary", wantLast: "Jane"},
+		{name: "empty", input: "   ", wantFirst: "", wantLast: ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			first, last := splitShippingName(test.input)
+			if first != test.wantFirst || last != test.wantLast {
+				t.Fatalf("splitShippingName(%q) = (%q, %q), want (%q, %q)",
+					test.input, first, last, test.wantFirst, test.wantLast)
+			}
+		})
+	}
+}
+
 func executeTestQuery(t *testing.T, client *AdminClient) {
 	t.Helper()
 	var data struct {
@@ -198,7 +221,7 @@ func TestCreateOrderUsesSafeTagsAndSourceIdentifier(t *testing.T) {
 			"name":"#1001",
 			"totalPriceSet":{"shopMoney":{"amount":"25.02","currencyCode":"HKD"}},
 			"lineItems":{"nodes":[{"id":"gid://shopify/LineItem/1"}]},
-			"shippingAddress":{"firstName":"Alice Test","phone":"+85261234567",
+			"shippingAddress":{"firstName":"Alice","lastName":"Test","phone":"+85261234567",
 				"address1":"1 Test Street","city":"Wan Chai",
 				"provinceCode":"HK","countryCodeV2":"HK"}
 		},"userErrors":[]}}}`))
@@ -269,7 +292,8 @@ func TestCreateOrderUsesSafeTagsAndSourceIdentifier(t *testing.T) {
 	if !ok {
 		t.Fatalf("unexpected shipping address payload: %#v", orderVariables["shippingAddress"])
 	}
-	if shippingAddress["firstName"] != "Alice Test" ||
+	if shippingAddress["firstName"] != "Alice" ||
+		shippingAddress["lastName"] != "Test" ||
 		shippingAddress["address1"] != "1 Test Street" ||
 		shippingAddress["city"] != "Wan Chai" ||
 		shippingAddress["provinceCode"] != "HK" ||
@@ -291,7 +315,8 @@ func TestCreateOrderUsesSafeTagsAndSourceIdentifier(t *testing.T) {
 	toUpsert, ok := customer["toUpsert"].(map[string]any)
 	if !ok ||
 		toUpsert["email"] != "alice@example.com" ||
-		toUpsert["firstName"] != "Alice Test" {
+		toUpsert["firstName"] != "Alice" ||
+		toUpsert["lastName"] != "Test" {
 		t.Fatalf("unexpected Shopify customer upsert: %#v", customer)
 	}
 	if _, hasPhone := toUpsert["phone"]; hasPhone {
@@ -369,7 +394,7 @@ func TestCreateOrderReplicatesFreeShippingCode(t *testing.T) {
 			"id":"gid://shopify/Order/1","legacyResourceId":"1","name":"#1001",
 			"totalPriceSet":{"shopMoney":{"amount":"20.00","currencyCode":"HKD"}},
 			"lineItems":{"nodes":[{"id":"gid://shopify/LineItem/1"}]},
-			"shippingAddress":{"firstName":"Alice","phone":"+85261234567",
+			"shippingAddress":{"firstName":"Alice","lastName":"Alice","phone":"+85261234567",
 				"address1":"1 Test Street","city":"Wan Chai",
 				"provinceCode":"HK","countryCodeV2":"HK"}
 		},"userErrors":[]}}}`))
@@ -416,7 +441,7 @@ func TestCreateOrderPreservesPartialShippingDiscountAsFixedAmount(t *testing.T) 
 			"id":"gid://shopify/Order/2","legacyResourceId":"2","name":"#1002",
 			"totalPriceSet":{"shopMoney":{"amount":"23.00","currencyCode":"HKD"}},
 			"lineItems":{"nodes":[{"id":"gid://shopify/LineItem/2"}]},
-			"shippingAddress":{"firstName":"Alice","phone":"+85261234567",
+			"shippingAddress":{"firstName":"Alice","lastName":"Alice","phone":"+85261234567",
 				"address1":"1 Test Street","city":"Wan Chai",
 				"provinceCode":"HK","countryCodeV2":"HK"}
 		},"userErrors":[]}}}`))
@@ -475,7 +500,7 @@ func TestCreateOrderRepairsMissingShippingAddress(t *testing.T) {
 			repairedAddress = input["shippingAddress"].(map[string]any)
 			_, _ = w.Write([]byte(`{"data":{"orderUpdate":{"order":{
 				"id":"gid://shopify/Order/9",
-				"shippingAddress":{"firstName":"Alice","phone":"+85261234567",
+				"shippingAddress":{"firstName":"Alice","lastName":"Alice","phone":"+85261234567",
 					"address1":"9 Test Street","city":"Kowloon City",
 					"provinceCode":"KLN","countryCodeV2":"HK"}
 			},"userErrors":[]}}}`))
@@ -508,6 +533,8 @@ func TestCreateOrderRepairsMissingShippingAddress(t *testing.T) {
 		t.Fatalf("missing address was not repaired: calls=%d result=%+v", calls, result)
 	}
 	if repairedAddress["address1"] != "9 Test Street" ||
+		repairedAddress["firstName"] != "Alice" ||
+		repairedAddress["lastName"] != "Alice" ||
 		repairedAddress["city"] != "Kowloon City" ||
 		repairedAddress["provinceCode"] != "KLN" ||
 		repairedAddress["countryCode"] != "HK" {
