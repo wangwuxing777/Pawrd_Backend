@@ -36,6 +36,11 @@ func setupUnifiedProfileTestDB(t *testing.T) *gorm.DB {
 		&models.PetPublicProfile{},
 		&models.PetVisibilitySetting{},
 		&models.PetDerivedSummary{},
+		&models.PetVaccination{},
+		&models.PetMedicalVisit{},
+		&models.PetMedication{},
+		&models.PetWeightEntry{},
+		&models.ShippingAddress{},
 		&models.Post{},
 		&models.PostPetTag{},
 		&models.PostImage{},
@@ -665,6 +670,8 @@ func TestFamilyProfileMePutViaJWT(t *testing.T) {
 	rec, req := authedRequest(t, http.MethodPut, "/api/domain/families/me", token, map[string]any{
 		"display_name": "The JWT Family",
 		"handle":       "jwt-family",
+		"avatar_url":   "https://example.com/a.png",
+		"cover_url":    "https://example.com/c.png",
 		"bio":          "hello",
 	})
 	// Deliberately no X-User-Id header — the JWT must be enough.
@@ -678,6 +685,8 @@ func TestFamilyProfileMePutViaJWT(t *testing.T) {
 		ID          string `json:"id"`
 		Handle      string `json:"handle"`
 		DisplayName string `json:"display_name"`
+		AvatarURL   string `json:"avatar_url"`
+		CoverURL    string `json:"cover_url"`
 		OwnerUserID string `json:"owner_user_id"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
@@ -688,6 +697,10 @@ func TestFamilyProfileMePutViaJWT(t *testing.T) {
 	}
 	if payload.Handle != "jwt-family" || payload.DisplayName != "The JWT Family" {
 		t.Fatalf("unexpected family payload: %+v", payload)
+	}
+	if payload.AvatarURL != "https://example.com/a.png" ||
+		payload.CoverURL != "https://example.com/c.png" {
+		t.Fatalf("expected family image URLs, got %+v", payload)
 	}
 }
 

@@ -287,6 +287,8 @@ func main() {
 	mux.HandleFunc("/api/auth/verify/send", handlers.NewAuthVerifySendHandler())
 	mux.HandleFunc("/api/auth/verify/check", handlers.NewAuthVerifyCheckHandler())
 	mux.HandleFunc("/api/profile/me", handlers.NewProfileMeHandler(db))
+	mux.HandleFunc("/api/profile/shipping-addresses", handlers.NewShippingAddressesHandler(db))
+	mux.HandleFunc("/api/profile/pets", handlers.NewPrivatePetsHandler(db))
 	mux.HandleFunc("/api/bookings", handlers.NewAppBookingsHandler(db, merchantVaccinationClient))
 	mux.HandleFunc("/api/bookings/{bookingID}", handlers.NewAppBookingDetailHandler(db, merchantVaccinationClient))
 	mux.HandleFunc("/api/bookings/sync", handlers.NewAppBookingSyncHandler(db, os.Getenv("BOOKING_SYNC_SHARED_SECRET")))

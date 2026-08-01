@@ -14,6 +14,7 @@ type Family struct {
 	DisplayName string         `gorm:"type:text;not null" json:"display_name"`
 	Handle      string         `gorm:"type:text;uniqueIndex;not null" json:"handle"`
 	AvatarURL   string         `gorm:"type:text;default:''" json:"avatar_url"`
+	CoverURL    string         `gorm:"type:text;default:''" json:"cover_url"`
 	Bio         string         `gorm:"type:text;default:''" json:"bio"`
 	City        string         `gorm:"type:text;default:''" json:"city"`
 	IsPublic    bool           `gorm:"default:true" json:"is_public"`
@@ -65,7 +66,9 @@ type Pet struct {
 	BirthDate            *time.Time           `json:"birth_date,omitempty"`
 	AvatarURL            string               `gorm:"type:text;default:''" json:"avatar_url"`
 	MicrochipID          string               `gorm:"type:text;default:''" json:"-"`
+	Allergies            string               `gorm:"type:text;default:''" json:"-"`
 	PrivateNotes         string               `gorm:"type:text;default:''" json:"-"`
+	IsNeutered           bool                 `gorm:"default:false" json:"-"`
 	CurrentWeightKg      *float64             `json:"-"`
 	LastVaccinationAt    *time.Time           `json:"-"`
 	NextVaccinationDueAt *time.Time           `json:"-"`
@@ -74,6 +77,10 @@ type Pet struct {
 	PublicProfile        PetPublicProfile     `gorm:"foreignKey:PetID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"public_profile,omitempty"`
 	VisibilitySettings   PetVisibilitySetting `gorm:"foreignKey:PetID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"visibility_settings,omitempty"`
 	DerivedSummary       PetDerivedSummary    `gorm:"foreignKey:PetID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"derived_summary,omitempty"`
+	Vaccinations         []PetVaccination     `gorm:"foreignKey:PetID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"-"`
+	MedicalVisits        []PetMedicalVisit    `gorm:"foreignKey:PetID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"-"`
+	Medications          []PetMedication      `gorm:"foreignKey:PetID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"-"`
+	WeightEntries        []PetWeightEntry     `gorm:"foreignKey:PetID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"-"`
 }
 
 func (p *Pet) BeforeCreate(tx *gorm.DB) error {

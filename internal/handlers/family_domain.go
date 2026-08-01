@@ -31,6 +31,7 @@ type familyProfilePayload struct {
 	Handle      string              `json:"handle"`
 	DisplayName string              `json:"display_name"`
 	AvatarURL   string              `json:"avatar_url,omitempty"`
+	CoverURL    string              `json:"cover_url,omitempty"`
 	Bio         string              `json:"bio,omitempty"`
 	City        string              `json:"city,omitempty"`
 	OwnerUserID string              `json:"owner_user_id"`
@@ -100,6 +101,7 @@ func loadFamilyProfile(db *gorm.DB, idOrHandle string, viewerUserID string) (fam
 		Handle:      family.Handle,
 		DisplayName: family.DisplayName,
 		AvatarURL:   family.AvatarURL,
+		CoverURL:    family.CoverURL,
 		Bio:         family.Bio,
 		City:        family.City,
 		OwnerUserID: family.OwnerUserID,
@@ -201,6 +203,7 @@ type updateFamilyRequest struct {
 	DisplayName string `json:"display_name"`
 	Handle      string `json:"handle"`
 	AvatarURL   string `json:"avatar_url"`
+	CoverURL    string `json:"cover_url"`
 	Bio         string `json:"bio"`
 	City        string `json:"city"`
 }
@@ -273,6 +276,7 @@ func NewFamilyProfileMeHandler(db *gorm.DB) http.HandlerFunc {
 					DisplayName: req.DisplayName,
 					Handle:      req.Handle,
 					AvatarURL:   req.AvatarURL,
+					CoverURL:    req.CoverURL,
 					Bio:         req.Bio,
 					City:        req.City,
 					IsPublic:    true,
@@ -304,6 +308,7 @@ func NewFamilyProfileMeHandler(db *gorm.DB) http.HandlerFunc {
 					family.Handle = req.Handle
 				}
 				family.AvatarURL = req.AvatarURL
+				family.CoverURL = req.CoverURL
 				family.Bio = req.Bio
 				family.City = req.City
 				if err := db.Save(&family).Error; err != nil {
